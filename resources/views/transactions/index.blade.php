@@ -1,29 +1,54 @@
 <x-app-layout>
-    <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">Transactions</h2>
-    </x-slot>
+    <x-slot name="header">Ledger</x-slot>
 
-    <div class="py-12">
+    <div class="py-10">
         <div class="max-w-6xl mx-auto sm:px-6 lg:px-8 space-y-6">
 
-            <div class="bg-white p-6 shadow sm:rounded-lg">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            @if (session('status'))
+                <div class="text-sm text-[#5B9279] font-num">{{ session('status') }}</div>
+            @endif
+
+            {{-- KPI row: $monthSpent, $monthIncome, $monthNet, $netChangePct passed from controller --}}
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div class="bg-[#1D1911] border border-[#332C1F] rounded-md p-4">
+                    <div class="text-xs text-[#B9AF98] mb-1.5">Spent this month</div>
+                    <div class="font-num text-2xl text-[#C1443C]">₹{{ number_format($monthSpent ?? 0, 0) }}</div>
+                </div>
+                <div class="bg-[#1D1911] border border-[#332C1F] rounded-md p-4">
+                    <div class="text-xs text-[#B9AF98] mb-1.5">Income this month</div>
+                    <div class="font-num text-2xl text-[#5B9279]">₹{{ number_format($monthIncome ?? 0, 0) }}</div>
+                </div>
+                <div class="bg-[#1D1911] border border-[#332C1F] rounded-md p-4">
+                    <div class="text-xs text-[#B9AF98] mb-1.5">Net</div>
+                    <div class="font-num text-2xl text-[#EDE6D6]">₹{{ number_format($monthNet ?? 0, 0) }}</div>
+                    @if (isset($netChangePct))
+                        <div class="text-xs mt-1 {{ $netChangePct >= 0 ? 'text-[#5B9279]' : 'text-[#C1443C]' }}">
+                            {{ $netChangePct >= 0 ? '↑' : '↓' }} {{ number_format(abs($netChangePct), 0) }}% vs last month
+                        </div>
+                    @endif
+                </div>
+            </div>
+
+            {{-- Charts --}}
+            <div class="bg-[#1D1911] border border-[#332C1F] rounded-md p-6">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div>
-                        <h3 class="text-sm font-semibold text-gray-700 mb-2">This Month's Spending by Category</h3>
+                        <h3 class="text-xs text-[#B9AF98] mb-3">This month's spending by category</h3>
                         @if ($categoryBreakdown->isEmpty())
-                            <p class="text-gray-400 text-sm">No spending logged this month yet.</p>
+                            <p class="text-[#6b6355] text-sm">No spending logged this month yet.</p>
                         @else
-                            <div class="relative h-56">
+                            <div class="relative h-48">
                                 <canvas id="categoryChart"></canvas>
                             </div>
+                            <div id="categoryLegend" class="flex flex-wrap gap-x-4 gap-y-1.5 mt-3 text-xs text-[#B9AF98]"></div>
                         @endif
                     </div>
                     <div>
-                        <h3 class="text-sm font-semibold text-gray-700 mb-2">Monthly Spending Trend</h3>
+                        <h3 class="text-xs text-[#B9AF98] mb-3">Monthly spending trend</h3>
                         @if ($monthlyTrend->isEmpty())
-                            <p class="text-gray-400 text-sm">Not enough data yet.</p>
+                            <p class="text-[#6b6355] text-sm">Not enough data yet.</p>
                         @else
-                            <div class="relative h-56">
+                            <div class="relative h-48">
                                 <canvas id="trendChart"></canvas>
                             </div>
                         @endif
@@ -31,25 +56,22 @@
                 </div>
             </div>
 
-            <div class="bg-white p-6 shadow sm:rounded-lg">
+            {{-- Ledger table --}}
+            <div class="bg-[#1D1911] border border-[#332C1F] rounded-md p-6">
 
-                @if (session('status'))
-                    <div class="mb-4 text-sm text-green-600">{{ session('status') }}</div>
-                @endif
-
-                <div class="flex justify-between items-center mb-4">
-                    <form method="GET" class="flex gap-2 flex-wrap items-end">
+                <div class="flex justify-between items-end mb-5 flex-wrap gap-3">
+                    <form method="GET" class="flex gap-3 flex-wrap items-end">
                         <div>
-                            <label class="block text-xs text-gray-500">Type</label>
-                            <select name="type" class="rounded-md border-gray-300 text-sm">
+                            <label class="block text-xs text-[#6b6355] mb-1">Type</label>
+                            <select name="type" class="rounded-md bg-[#15120E] border-[#332C1F] text-[#EDE6D6] text-sm focus:border-[#C9A227] focus:ring-[#C9A227]">
                                 <option value="">All</option>
                                 <option value="debit" @selected(request('type') === 'debit')>Debit</option>
                                 <option value="credit" @selected(request('type') === 'credit')>Credit</option>
                             </select>
                         </div>
                         <div>
-                            <label class="block text-xs text-gray-500">Category</label>
-                            <select name="category" class="rounded-md border-gray-300 text-sm">
+                            <label class="block text-xs text-[#6b6355] mb-1">Category</label>
+                            <select name="category" class="rounded-md bg-[#15120E] border-[#332C1F] text-[#EDE6D6] text-sm focus:border-[#C9A227] focus:ring-[#C9A227]">
                                 <option value="">All</option>
                                 @foreach ($categories as $cat)
                                     <option value="{{ $cat->value }}" @selected(request('category') === $cat->value)>{{ $cat->value }}</option>
@@ -57,57 +79,57 @@
                             </select>
                         </div>
                         <div>
-                            <label class="block text-xs text-gray-500">From</label>
-                            <input type="date" name="from" value="{{ request('from') }}" class="rounded-md border-gray-300 text-sm">
+                            <label class="block text-xs text-[#6b6355] mb-1">From</label>
+                            <input type="date" name="from" value="{{ request('from') }}" class="rounded-md bg-[#15120E] border-[#332C1F] text-[#EDE6D6] text-sm focus:border-[#C9A227] focus:ring-[#C9A227]">
                         </div>
                         <div>
-                            <label class="block text-xs text-gray-500">To</label>
-                            <input type="date" name="to" value="{{ request('to') }}" class="rounded-md border-gray-300 text-sm">
+                            <label class="block text-xs text-[#6b6355] mb-1">To</label>
+                            <input type="date" name="to" value="{{ request('to') }}" class="rounded-md bg-[#15120E] border-[#332C1F] text-[#EDE6D6] text-sm focus:border-[#C9A227] focus:ring-[#C9A227]">
                         </div>
-                        <x-primary-button>Filter</x-primary-button>
-                        <a href="{{ route('transactions.index') }}" class="text-sm text-gray-500 underline self-center">Reset</a>
+                        <button type="submit" class="rounded-md bg-[#C9A227] text-[#15120E] text-sm font-medium px-4 py-2 hover:bg-[#dab438] transition">Filter</button>
+                        <a href="{{ route('transactions.index') }}" class="text-sm text-[#6b6355] underline self-center">Reset</a>
                     </form>
 
-                    <a href="{{ route('transactions.create') }}">
-                        <x-primary-button>+ Add Transaction</x-primary-button>
+                    <a href="{{ route('transactions.create') }}" class="rounded-md border border-[#C9A227] text-[#C9A227] text-sm font-medium px-4 py-2 hover:bg-[#C9A227] hover:text-[#15120E] transition">
+                        + Add transaction
                     </a>
                 </div>
 
                 @if ($transactions->isEmpty())
-                    <p class="text-gray-500">No transactions yet.</p>
+                    <p class="text-[#6b6355] text-sm">No transactions yet.</p>
                 @else
-                    <table class="w-full text-left text-sm">
+                    <table class="w-full text-left text-sm font-num">
                         <thead>
-                            <tr class="border-b">
-                                <th class="py-2">Date</th>
-                                <th class="py-2">Type</th>
-                                <th class="py-2">Amount</th>
-                                <th class="py-2">Category</th>
-                                <th class="py-2">Note</th>
-                                <th class="py-2">Source</th>
+                            <tr class="border-b border-[#332C1F] text-[#6b6355] text-xs font-sans">
+                                <th class="py-2 font-normal w-10">#</th>
+                                <th class="py-2 font-normal">Date</th>
+                                <th class="py-2 font-normal font-sans">Category</th>
+                                <th class="py-2 font-normal font-sans">Note</th>
+                                <th class="py-2 font-normal text-right">Amount</th>
+                                <th class="py-2 font-normal font-sans">Source</th>
                                 <th class="py-2"></th>
                             </tr>
                         </thead>
                         <tbody>
-                            @foreach ($transactions as $t)
-                                <tr class="border-b">
-                                    <td class="py-2">{{ $t->transaction_date->format('d M Y') }}</td>
-                                    <td class="py-2 capitalize">{{ $t->type }}</td>
-                                    <td class="py-2 {{ $t->type === 'debit' ? 'text-red-600' : 'text-green-600' }}">
-                                        ₹{{ number_format($t->amount, 2) }}
+                            @foreach ($transactions as $i => $t)
+                                <tr class="border-b border-[#241f16]">
+                                    <td class="py-2.5 text-[#6b6355]">{{ str_pad($transactions->firstItem() + $i, 3, '0', STR_PAD_LEFT) }}</td>
+                                    <td class="py-2.5 text-[#B9AF98]">{{ $t->transaction_date->format('d M') }}</td>
+                                    <td class="py-2.5 font-sans">{{ $t->category }}</td>
+                                    <td class="py-2.5 font-sans text-[#B9AF98]">{{ $t->note }}</td>
+                                    <td class="py-2.5 text-right {{ $t->type === 'debit' ? 'text-[#C1443C]' : 'text-[#5B9279]' }}">
+                                        {{ $t->type === 'debit' ? '-' : '+' }}₹{{ number_format($t->amount, 2) }}
                                     </td>
-                                    <td class="py-2">{{ $t->category }}</td>
-                                    <td class="py-2">{{ $t->note }}</td>
-                                    <td class="py-2 capitalize">{{ $t->source }}</td>
-                                    <td class="py-2">
-                                        <a href="{{ route('transactions.edit', $t) }}" class="text-indigo-600 text-sm">Edit</a>
+                                    <td class="py-2.5 font-sans capitalize text-[#6b6355] text-xs">{{ $t->source }}</td>
+                                    <td class="py-2.5 font-sans">
+                                        <a href="{{ route('transactions.edit', $t) }}" class="text-[#C9A227] text-xs hover:underline">Edit</a>
                                     </td>
                                 </tr>
                             @endforeach
                         </tbody>
                     </table>
 
-                    <div class="mt-4">
+                    <div class="mt-4 text-[#B9AF98] [&_a]:text-[#C9A227] [&_span]:text-[#6b6355]">
                         {{ $transactions->links() }}
                     </div>
                 @endif
@@ -120,21 +142,37 @@
         @push('scripts')
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
         <script>
+            const ledgerPalette = ['#C9A227', '#8C7018', '#5B9279', '#B9AF98', '#C1443C', '#6b6355', '#dab438', '#3f6b52'];
+
             @if ($categoryBreakdown->isNotEmpty())
+            const catLabels = {!! json_encode($categoryBreakdown->pluck('category')) !!};
+            const catData = {!! json_encode($categoryBreakdown->pluck('total')) !!};
+            const catColors = catLabels.map((_, i) => ledgerPalette[i % ledgerPalette.length]);
+
             new Chart(document.getElementById('categoryChart'), {
-                type: 'pie',
+                type: 'doughnut',
                 data: {
-                    labels: {!! json_encode($categoryBreakdown->pluck('category')) !!},
-                    datasets: [{
-                        data: {!! json_encode($categoryBreakdown->pluck('total')) !!},
-                        backgroundColor: ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316'],
-                    }]
+                    labels: catLabels,
+                    datasets: [{ data: catData, backgroundColor: catColors, borderColor: '#1D1911', borderWidth: 2 }]
                 },
                 options: {
                     maintainAspectRatio: false,
-                    plugins: { legend: { position: 'bottom' } }
+                    cutout: '62%',
+                    onClick: (evt, elements) => {
+                        if (!elements.length) return;
+                        const label = catLabels[elements[0].index];
+                        window.location.href = '{{ route('transactions.index') }}?category=' + encodeURIComponent(label);
+                    },
+                    onHover: (evt, elements) => {
+                        evt.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+                    },
+                    plugins: { legend: { display: false } }
                 }
             });
+
+            document.getElementById('categoryLegend').innerHTML = catLabels.map((label, i) =>
+                `<a href="{{ route('transactions.index') }}?category=${encodeURIComponent(label)}" class="flex items-center gap-1.5 hover:text-[#EDE6D6] transition"><span style="width:8px;height:8px;border-radius:2px;background:${catColors[i]};display:inline-block;"></span>${label}</a>`
+            ).join('');
             @endif
 
             @if ($monthlyTrend->isNotEmpty())
@@ -143,15 +181,19 @@
                 data: {
                     labels: {!! json_encode($monthlyTrend->pluck('month')) !!},
                     datasets: [{
-                        label: 'Total Debit (₹)',
                         data: {!! json_encode($monthlyTrend->pluck('total')) !!},
-                        backgroundColor: '#6366f1',
+                        backgroundColor: '#C9A227',
+                        borderRadius: 3,
+                        maxBarThickness: 26,
                     }]
                 },
                 options: {
                     maintainAspectRatio: false,
                     plugins: { legend: { display: false } },
-                    scales: { y: { beginAtZero: true } }
+                    scales: {
+                        x: { ticks: { color: '#B9AF98' }, grid: { display: false } },
+                        y: { beginAtZero: true, ticks: { color: '#B9AF98' }, grid: { color: '#241f16' } }
+                    }
                 }
             });
             @endif

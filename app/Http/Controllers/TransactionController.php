@@ -38,11 +38,41 @@ class TransactionController extends Controller
             ->orderBy('month')
             ->get();
 
+        // KPI row: this month's spend, income, net, and % change vs last month's net
+        $monthSpent = Transaction::where('user_id', auth()->id())
+            ->where('type', 'debit')
+            ->whereYear('transaction_date', now()->year)
+            ->whereMonth('transaction_date', now()->month)
+            ->sum('amount');
+
+        $monthIncome = Transaction::where('user_id', auth()->id())
+            ->where('type', 'credit')
+            ->whereYear('transaction_date', now()->year)
+            ->whereMonth('transaction_date', now()->month)
+            ->sum('amount');
+
+        $monthNet = $monthIncome - $monthSpent;
+
+        $lastMonth = now()->subMonth();
+        $lastMonthNet = Transaction::where('user_id', auth()->id())
+            ->whereYear('transaction_date', $lastMonth->year)
+            ->whereMonth('transaction_date', $lastMonth->month)
+            ->selectRaw("SUM(CASE WHEN type = 'credit' THEN amount ELSE -amount END) as net")
+            ->value('net') ?? 0;
+
+        $netChangePct = $lastMonthNet != 0
+            ? (($monthNet - $lastMonthNet) / abs($lastMonthNet)) * 100
+            : null;
+
         return view('transactions.index', [
             'transactions' => $transactions,
             'categories' => TransactionCategory::cases(),
             'categoryBreakdown' => $categoryBreakdown,
             'monthlyTrend' => $monthlyTrend,
+            'monthSpent' => $monthSpent,
+            'monthIncome' => $monthIncome,
+            'monthNet' => $monthNet,
+            'netChangePct' => $netChangePct,
         ]);
     }
 
