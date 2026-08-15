@@ -7,6 +7,7 @@ use App\Jobs\ParseTransactionMessage;
 use App\Models\ConversationContext;
 use App\Models\Transaction;
 use App\Models\User;
+use Carbon\Carbon;
 
 class InboundMessageRouter
 {
@@ -17,6 +18,9 @@ class InboundMessageRouter
         protected TransactionQueryService $queryService,
         protected NarrativeSummaryService $narrativeSummary,
         protected TransactionActionParser $actionParser,
+        protected RecurringExpenseDetector $recurringDetector,
+        protected StatementRequestParser $statementRequestParser,
+        protected StatementGenerator $statementGenerator,
     ) {}
 
     public function route(User $user, string $message): void
@@ -40,6 +44,10 @@ class InboundMessageRouter
         }
 
         if ($this->handleTransactionAction($user, $message)) {
+            return;
+        }
+
+        if ($this->handleStatementRequest($user, $message)) {
             return;
         }
 
@@ -195,6 +203,59 @@ class InboundMessageRouter
         return true;
     }
 
+    /**
+     * Catches "generate a PDF statement for July" / "send me a csv of this
+     * month" style requests. Checked before handleQuery() so the LLM's
+     * query-intent parser doesn't misclassify a document request as an
+     * aggregate spending question. On recognition, generates the file,
+     * sends it via WhatsApp document delivery, and always cleans up the
+     * temp file — success or failure.
+     */
+    protected function handleStatementRequest(User $user, string $message): bool
+    {
+        try {
+            $intent = $this->statementRequestParser->parse($message);
+        } catch (\Throwable $e) {
+            return false;
+        }
+
+        if (!$intent['recognized'] || $intent['confidence'] < 0.7) {
+            return false;
+        }
+
+        $start = $intent['start_date'] ? Carbon::parse($intent['start_date']) : now()->startOfMonth();
+        $end = $intent['end_date'] ? Carbon::parse($intent['end_date']) : now();
+
+        $path = null;
+
+        try {
+            $path = $intent['format'] === 'csv'
+                ? $this->statementGenerator->generateCsv($user, $start, $end)
+                : $this->statementGenerator->generatePdf($user, $start, $end);
+
+            $filename = 'statement.' . $intent['format'];
+            $sent = $this->whatsapp->sendDocument($user->phone, $path, $filename);
+
+            if ($sent) {
+                $periodLabel = $start->isSameDay($end)
+                    ? $start->format('M j')
+                    : "{$start->format('M j')} – {$end->format('M j')}";
+
+                $this->whatsapp->sendText($user->phone, "📄 Here's your statement ({$periodLabel}).");
+            } else {
+                $this->whatsapp->sendText($user->phone, "⚠️ Couldn't send that statement — try again in a bit.");
+            }
+        } catch (\Throwable $e) {
+            $this->whatsapp->sendText($user->phone, "⚠️ Something went wrong generating that statement — try again in a bit.");
+        } finally {
+            if ($path && file_exists($path)) {
+                @unlink($path);
+            }
+        }
+
+        return true;
+    }
+
     protected function handleQuery(User $user, string $message): bool
     {
         try {
@@ -209,6 +270,10 @@ class InboundMessageRouter
 
         if ($intent['query_type'] === 'last_transaction') {
             return $this->replyLastTransaction($user);
+        }
+
+        if ($intent['query_type'] === 'recurring') {
+            return $this->replyRecurring($user);
         }
 
         if ($intent['is_comparison']) {
@@ -254,6 +319,33 @@ class InboundMessageRouter
             "🧾 {$emoji} ₹{$transaction->amount} · {$transaction->category} · {$transaction->transaction_date->format('M j')}"
         );
 
+        return true;
+    }
+
+    /**
+     * Answers "what are my recurring expenses" style queries. Pure read —
+     * runs RecurringExpenseDetector fresh each time (no caching), same
+     * pattern-matching logic as the dashboard widget, no LLM involved in
+     * the detection itself.
+     */
+    protected function replyRecurring(User $user): bool
+    {
+        $patterns = $this->recurringDetector->detect($user);
+
+        if (empty($patterns)) {
+            $this->whatsapp->sendText($user->phone, "🔁 No recurring expenses detected yet.");
+            return true;
+        }
+
+        $lines = ["🔁 Likely recurring expenses:", ""];
+
+        foreach ($patterns as $pattern) {
+            $emoji = TransactionCategory::matchLoose($pattern['category'])?->emoji() ?? '📌';
+            $interval = round($pattern['average_interval_days']);
+            $lines[] = "{$emoji} {$pattern['category']}: ₹{$pattern['average_amount']} · every ~{$interval} days · {$pattern['occurrences']}x";
+        }
+
+        $this->whatsapp->sendText($user->phone, implode("\n", $lines));
         return true;
     }
 

@@ -80,4 +80,107 @@ class WhatsAppClient
     {
         return $this->sendText($toPhone, $message) !== [];
     }
+
+    /**
+     * Uploads a local file to Meta's media endpoint and returns the media_id,
+     * or null on failure. Same retry/logging conventions as sendText().
+     */
+    protected function uploadMedia(string $filePath, string $mimeType): ?string
+    {
+        $url = "https://graph.facebook.com/{$this->apiVersion}/{$this->phoneNumberId}/media";
+
+        try {
+            $response = Http::timeout(20)
+                ->retry(2, 1000, function ($exception, $request) {
+                    return $exception instanceof \Illuminate\Http\Client\ConnectionException;
+                })
+                ->withToken($this->token)
+                ->attach('file', file_get_contents($filePath), basename($filePath), ['Content-Type' => $mimeType])
+                ->post($url, [
+                    'messaging_product' => 'whatsapp',
+                    'type' => $mimeType,
+                ]);
+
+            if ($response->failed()) {
+                Log::error('WhatsApp media upload failed', [
+                    'file' => $filePath,
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
+
+                return null;
+            }
+
+            return $response->json('id');
+        } catch (\Throwable $e) {
+            Log::error('WhatsApp media upload exception', [
+                'file' => $filePath,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * Sends a local file as a WhatsApp document message: uploads it to
+     * Meta's media endpoint, then sends a document message referencing the
+     * returned media_id. Never throws — returns false if either step fails,
+     * same fire-and-forget contract as sendText(). Caller owns the file's
+     * lifecycle (this method does not delete $filePath).
+     */
+    public function sendDocument(string $toPhone, string $filePath, string $filename): bool
+    {
+        $mimeType = match (strtolower(pathinfo($filePath, PATHINFO_EXTENSION))) {
+            'pdf' => 'application/pdf',
+            'csv' => 'text/plain',
+            default => 'application/octet-stream',
+        };
+
+        $mediaId = $this->uploadMedia($filePath, $mimeType);
+
+        if (!$mediaId) {
+            return false;
+        }
+
+        $url = "https://graph.facebook.com/{$this->apiVersion}/{$this->phoneNumberId}/messages";
+
+        try {
+            $response = Http::timeout(10)
+                ->retry(2, 1000, function ($exception, $request) {
+                    return $exception instanceof \Illuminate\Http\Client\ConnectionException;
+                })
+                ->withToken($this->token)
+                ->post($url, [
+                    'messaging_product' => 'whatsapp',
+                    'to' => $toPhone,
+                    'type' => 'document',
+                    'document' => [
+                        'id' => $mediaId,
+                        'filename' => $filename,
+                    ],
+                ]);
+
+            if ($response->failed()) {
+                Log::error('WhatsApp document send failed', [
+                    'to' => $toPhone,
+                    'media_id' => $mediaId,
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
+
+                return false;
+            }
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('WhatsApp document send exception', [
+                'to' => $toPhone,
+                'media_id' => $mediaId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
 }

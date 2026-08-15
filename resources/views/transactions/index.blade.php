@@ -56,6 +56,26 @@
                 </div>
             </div>
 
+            {{-- Recurring expenses --}}
+            @if (!empty($recurringPatterns))
+                <div class="bg-[#1D1911] border border-[#332C1F] rounded-md p-6">
+                    <h3 class="text-xs text-[#B9AF98] mb-3">🔁 Likely recurring expenses</h3>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        @foreach ($recurringPatterns as $pattern)
+                            <div class="border border-[#332C1F] rounded-md p-3">
+                                <div class="flex justify-between items-baseline">
+                                    <span class="font-sans text-sm text-[#EDE6D6]">{{ $pattern['category'] }}</span>
+                                    <span class="font-num text-sm text-[#C9A227]">₹{{ number_format($pattern['average_amount'], 2) }}</span>
+                                </div>
+                                <div class="text-xs text-[#6b6355] mt-1">
+                                    {{ $pattern['occurrences'] }}× · every ~{{ round($pattern['average_interval_days']) }} days · last {{ \Carbon\Carbon::parse($pattern['last_date'])->format('d M') }}
+                                </div>
+                            </div>
+                        @endforeach
+                    </div>
+                </div>
+            @endif
+
             {{-- Ledger table --}}
             <div class="bg-[#1D1911] border border-[#332C1F] rounded-md p-6">
 

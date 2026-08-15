@@ -4,13 +4,14 @@ namespace App\Http\Controllers;
 
 use App\Enums\TransactionCategory;
 use App\Models\Transaction;
+use App\Services\RecurringExpenseDetector;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
 
 class TransactionController extends Controller
 {
-    public function index(Request $request): View
+    public function index(Request $request, RecurringExpenseDetector $detector): View
     {
         $transactions = Transaction::where('user_id', auth()->id())
             ->when($request->filled('type'), fn ($q) => $q->where('type', $request->type))
@@ -64,6 +65,8 @@ class TransactionController extends Controller
             ? (($monthNet - $lastMonthNet) / abs($lastMonthNet)) * 100
             : null;
 
+        $recurringPatterns = $detector->detect(auth()->user());
+
         return view('transactions.index', [
             'transactions' => $transactions,
             'categories' => TransactionCategory::cases(),
@@ -73,6 +76,7 @@ class TransactionController extends Controller
             'monthIncome' => $monthIncome,
             'monthNet' => $monthNet,
             'netChangePct' => $netChangePct,
+            'recurringPatterns' => $recurringPatterns,
         ]);
     }
 
