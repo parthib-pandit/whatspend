@@ -1,58 +1,168 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Whatspend
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+**Personal finance, texted in.**
 
-## About Laravel
+Log an expense the way you already talk about money — over WhatsApp. Send "420 for groceries" and it's in your ledger. No app to open, no form to fill. Whatspend parses what you send with Claude, keeps a running dashboard, and sends daily/weekly summaries automatically — all built on Laravel.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+![PHP](https://img.shields.io/badge/PHP-8.3-777BB4?logo=php&logoColor=white)
+![Laravel](https://img.shields.io/badge/Laravel-12.x-FF2D20?logo=laravel&logoColor=white)
+![MySQL](https://img.shields.io/badge/MySQL-database-4479A1?logo=mysql&logoColor=white)
+![WhatsApp Cloud API](https://img.shields.io/badge/WhatsApp-Cloud%20API-25D366?logo=whatsapp&logoColor=white)
+![Claude](https://img.shields.io/badge/LLM-Claude%20Haiku-D97757)
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+---
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+## What it does
 
-## Learning Laravel
+Whatspend is a multi-user (admin-approved, ~10-15 people) expense tracker with two ways in: free-text WhatsApp messages parsed into structured transactions by Claude, or manual entry on a web dashboard. Beyond logging, it supports natural-language spend queries ("how much did I spend on food this month?", "compare this month with last"), conversational edits and deletes ("actually make that ₹850", "delete the ₹500 grocery one from Tuesday"), on-demand PDF/CSV statement delivery straight to WhatsApp, monthly budget alerts, and recurring-expense detection — all without a single agentic tool-calling loop. The LLM only ever extracts structure; Laravel owns every number and every decision.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+Built as a deep-dive into Laravel (auth, queues, scheduling, jobs, API clients) and as a portfolio piece, with a hard constraint of staying near-zero cost to run.
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+---
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+## Screenshots
 
-## Agentic Development
+**Landing page**
+![Landing page](docs/screenshots/landing.png)
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+**Login**
+![Login](docs/screenshots/login.png)
 
-```bash
-composer require laravel/boost --dev
+**Dashboard — ledger, filters, category & trend charts**
+![Dashboard](docs/screenshots/dashboard.png)
 
-php artisan boost:install
+**WhatsApp — requesting and receiving a PDF statement**
+![WhatsApp statement delivery](docs/screenshots/whatsapp-statement.png)
+
+---
+
+## Architecture overview
+
+```
+WhatsApp message
+      │
+      ▼
+Meta Cloud API webhook (POST /webhook/whatsapp)
+      │  verify signature, resolve User by phone, log to whatsapp_messages
+      ▼
+InboundMessageRouter
+      │  routes by intent: pending confirmation? undo/edit? transaction
+      │  action (edit/delete)? statement request? spend query? or a
+      │  brand-new transaction to parse?
+      ▼
+Claude Haiku (via laravel/ai)     ← extracts structure ONLY
+      │  { type, amount, category, note, confidence }
+      ▼
+Laravel                            ← owns all computation & business logic
+      │  saves Transaction, runs aggregation queries, checks budgets,
+      │  generates statements, formats replies
+      ▼
+WhatsAppClient → outbound reply / document
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+The same "LLM extracts, Laravel computes" pattern is used everywhere an LLM appears — transaction parsing, query-intent extraction, statement-request parsing, narrative summaries. The model never touches a number it didn't first receive from Laravel already computed.
 
-## Contributing
+A single `conversation_contexts` table (built once, reused repeatedly) tracks short-lived state — an unconfirmed low-confidence parse awaiting YES/NO, the most recent transaction for undo/edit, a pending confirm-before-delete — so multi-turn corrections work without bespoke state machines per feature.
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+---
 
-## Code of Conduct
+## Key design decisions
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+- **LLM extracts, Laravel computes.** Every dollar amount, every aggregation, every budget check is deterministic backend logic. The LLM's job stops at turning free text into structured JSON (with a confidence score) — it never generates or touches a figure that ends up in a reply.
+- **Filter-based ("Tier 1") search over semantic search.** Natural-language queries are parsed into structured filter JSON (category, date range, amount bounds) and run as ordinary Eloquent queries. This covers the large majority of realistic questions without the ongoing cost and complexity of embeddings + a vector index at write-time.
+- **No agentic tool-calling loops.** Every LLM call is single-shot: one prompt in, one structured response out. No multi-step "decide which tool, evaluate, decide again" loops — keeps cost, latency, and auditability predictable on a WhatsApp-speed interface.
+- **Confidence-gated auto-save.** High-confidence parses (`≥ 0.7`) save immediately with a frictionless confirmation reply. Low-confidence parses ask an explicit YES/NO rather than guessing.
+- **Fuzzy targeting never auto-mutates.** "Delete the ₹500 grocery one from Tuesday" locates candidates via the same query service used for spend questions — exactly one match triggers a confirm-before-delete step; zero or multiple matches always ask the user to clarify, never guess.
 
-## Security Vulnerabilities
+---
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+## Tech stack
 
-## License
+| Layer | Choice |
+|---|---|
+| Framework | Laravel 12.x |
+| Language | PHP 8.3+ |
+| Database | MySQL |
+| Queue | `database` driver, drained via cron (`queue:work --stop-when-empty`) |
+| Scheduler | Laravel Task Scheduling, single cron entry (`schedule:run`) |
+| Auth | Laravel Breeze (session-based) |
+| LLM | Claude Haiku 4.5, via `laravel/ai` |
+| WhatsApp | Meta WhatsApp Cloud API (direct, no BSP) |
+| Charts | Chart.js via CDN |
+| Statements | `barryvdh/laravel-dompdf` (PDF), native CSV export |
+| Hosting | Shared hosting, cron-driven queue/scheduler |
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+---
+
+## Setup / local development
+
+```bash
+git clone https://github.com/parthib-pandit/whatspend.git
+cd whatspend
+composer install
+npm install && npm run build
+
+cp .env.example .env
+php artisan key:generate
+```
+
+Configure `.env`:
+
+```
+DB_CONNECTION=mysql
+DB_DATABASE=whatspend
+DB_USERNAME=...
+DB_PASSWORD=...
+
+WHATSAPP_TOKEN=
+WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_VERIFY_TOKEN=
+WHATSAPP_APP_SECRET=
+
+ANTHROPIC_API_KEY=
+AI_DEFAULT_PROVIDER=anthropic
+AI_DEFAULT_MODEL=claude-haiku-4-5
+
+APP_TIMEZONE=Asia/Kolkata
+```
+
+```bash
+php artisan migrate
+php artisan serve
+```
+
+For local WhatsApp webhook testing, tunnel your dev server (e.g. `ngrok http 8000`) and point Meta's webhook config at the tunnel URL. Register a Meta Developer app + WhatsApp product to get a test number and permanent token.
+
+Run the scheduler and queue worker locally in separate terminals:
+
+```bash
+php artisan schedule:work
+php artisan queue:work
+```
+
+---
+
+## Cost
+
+| Item | Cost |
+|---|---|
+| Hosting | $0 (existing shared hosting) |
+| WhatsApp Cloud API | ~$0-2/month at 10-15 users (replies inside the 24hr window are free; summaries/statements outside it are billed as utility messages, ~₹0.115 each) |
+| Claude Haiku 4.5 (all LLM calls — parsing, queries, narratives, statement-intent) | ~$0.001/call → under $1-2/month at this volume |
+| PDF generation | $0 (local package, no external service) |
+| **Total** | **~$1-3/month, realistically near $0** |
+
+---
+
+## Project status
+
+**v1 + v1.5: complete.** Core WhatsApp/dashboard logging, confirm/undo/edit flows, daily & weekly summaries, dashboard charts, filter-based natural-language queries, comparisons, narrative summaries, full conversational edit/delete, monthly budgets with proactive alerts, recurring-expense detection, and on-demand PDF/CSV statement delivery over WhatsApp — all shipped and verified end-to-end in production.
+
+**Deliberately deferred (v2/v3, not scheduled):**
+
+| Feature | Why deferred |
+|---|---|
+| Receipt OCR | New input pipeline (image webhook, media download, vision-model call) — real per-use cost and new failure modes, not just a prompt change |
+| Voice-note logging | New input pipeline (audio download + transcription stage) — extra latency and cost per message |
+| True semantic search | Needs embeddings at write-time + a vector index + similarity search at query-time — ongoing cost forever, not a one-off. Filter-based search already covers most realistic queries |
+| Agentic multi-step tool-calling | Multiple LLM round-trips per message, harder to keep deterministic/auditable — conflicts directly with the "LLM extracts, Laravel computes" principle the whole project is built around |
