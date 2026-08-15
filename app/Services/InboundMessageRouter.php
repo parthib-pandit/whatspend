@@ -13,6 +13,10 @@ class InboundMessageRouter
     public function __construct(
         protected CorrectionParser $correctionParser,
         protected WhatsAppClient $whatsapp,
+        protected QueryIntentParser $queryIntentParser,
+        protected TransactionQueryService $queryService,
+        protected NarrativeSummaryService $narrativeSummary,
+        protected TransactionActionParser $actionParser,
     ) {}
 
     public function route(User $user, string $message): void
@@ -24,7 +28,22 @@ class InboundMessageRouter
             return;
         }
 
+        $pendingAction = ConversationContext::activeFor($user->id, 'pending_action');
+
+        if ($pendingAction) {
+            $this->resolvePendingAction($user, $message, $pendingAction);
+            return;
+        }
+
         if ($this->handleUndoEdit($user, $message)) {
+            return;
+        }
+
+        if ($this->handleTransactionAction($user, $message)) {
+            return;
+        }
+
+        if ($this->handleQuery($user, $message)) {
             return;
         }
 
@@ -174,5 +193,270 @@ class InboundMessageRouter
         $transaction->update(['category' => $matched->value]);
         $this->whatsapp->sendText($user->phone, "✏️ Updated {$matched->emoji()} ₹{$transaction->amount} · {$matched->value}");
         return true;
+    }
+
+    protected function handleQuery(User $user, string $message): bool
+    {
+        try {
+            $intent = $this->queryIntentParser->parse($message);
+        } catch (\Throwable $e) {
+            return false;
+        }
+
+        if (!$intent['recognized'] || $intent['confidence'] < 0.6) {
+            return false;
+        }
+
+        if ($intent['is_comparison']) {
+            $comparison = $this->queryService->compare($user, $intent);
+
+            try {
+                $summary = $this->narrativeSummary->narrate($comparison, $intent['category']);
+                $reply = "📊 " . $summary;
+            } catch (\Throwable $e) {
+                $reply = $this->formatComparisonReply($intent, $comparison);
+            }
+
+            $this->whatsapp->sendText($user->phone, $reply);
+            return true;
+        }
+
+        $result = $this->queryService->summarize($user, $intent);
+
+        $this->whatsapp->sendText($user->phone, $this->formatQueryReply($intent, $result));
+
+        return true;
+    }
+
+    protected function formatComparisonReply(array $intent, array $comparison): string
+    {
+        $primary = $comparison['primary'];
+        $prior = $comparison['comparison'];
+        $delta = $comparison['delta_amount'];
+
+        $direction = $delta > 0 ? 'more' : ($delta < 0 ? 'less' : 'the same');
+        $deltaLine = $prior['total'] > 0
+            ? sprintf('That\'s ₹%s %s than the previous period.', number_format(abs($delta), 2), $direction)
+            : 'No prior-period data to compare against.';
+
+        return sprintf(
+            "📊 This period: ₹%s (%d txns). Previous period: ₹%s (%d txns). %s",
+            number_format($primary['total'], 2),
+            $primary['count'],
+            number_format($prior['total'], 2),
+            $prior['count'],
+            $deltaLine
+        );
+    }
+
+    protected function formatQueryReply(array $intent, array $result): string
+    {
+        $label = $intent['category'] ?? ($intent['type'] === 'credit' ? 'income' : 'expenses');
+        $period = $this->describePeriod($intent['start_date'], $intent['end_date']);
+
+        if ($result['count'] === 0) {
+            return "🔍 No transactions found for {$label}{$period}.";
+        }
+
+        $lines = ["🔍 ₹{$result['total']} across {$result['count']} transaction(s) for {$label}{$period}."];
+
+        if (!empty($result['by_category'])) {
+            $lines[] = "";
+            foreach ($result['by_category'] as $category => $amount) {
+                $emoji = TransactionCategory::matchLoose($category)?->emoji() ?? '📌';
+                $lines[] = "{$emoji} {$category}: ₹{$amount}";
+            }
+        }
+
+        return implode("\n", $lines);
+    }
+
+    protected function describePeriod(?string $start, ?string $end): string
+    {
+        if (!$start && !$end) {
+            return '';
+        }
+
+        return $start === $end
+            ? " on {$start}"
+            : " from {$start} to {$end}";
+    }
+
+    /**
+     * Catches natural-language edit/delete requests that handleUndoEdit's
+     * regex doesn't ("actually make that ₹850", "delete the ₹500 grocery
+     * one from Tuesday"). "last" scope reuses the last_transaction context
+     * directly (mutates immediately, same as the regex path). "search"
+     * scope never mutates on its own — exactly one candidate triggers a
+     * YES/NO confirmation step; zero or multiple candidates are dead ends
+     * that ask the user to clarify, never a guess.
+     */
+    protected function handleTransactionAction(User $user, string $message): bool
+    {
+        try {
+            $intent = $this->actionParser->parse($message);
+        } catch (\Throwable $e) {
+            return false;
+        }
+
+        if (!$intent['recognized'] || $intent['confidence'] < 0.6) {
+            return false;
+        }
+
+        if ($intent['target_scope'] === 'last') {
+            return $this->applyToLastTransaction($user, $intent);
+        }
+
+        return $this->searchAndConfirm($user, $intent);
+    }
+
+    protected function applyToLastTransaction(User $user, array $intent): bool
+    {
+        $context = ConversationContext::activeFor($user->id, 'last_transaction');
+        $transaction = $context ? Transaction::find($context->payload['transaction_id']) : null;
+
+        if (!$transaction) {
+            $this->whatsapp->sendText($user->phone, "🤷 Nothing recent to work with.");
+            return true;
+        }
+
+        if ($intent['action'] === 'delete') {
+            $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
+            $summary = "{$emoji} ₹{$transaction->amount} · {$transaction->category}";
+            $transaction->delete();
+            $context->delete();
+
+            $this->whatsapp->sendText($user->phone, "🗑️ Removed {$summary}");
+            return true;
+        }
+
+        $updates = [];
+        if ($intent['new_amount'] !== null) {
+            $updates['amount'] = $intent['new_amount'];
+        }
+        if ($intent['new_category'] !== null) {
+            $matched = TransactionCategory::matchLoose($intent['new_category']);
+            if ($matched) {
+                $updates['category'] = $matched->value;
+            }
+        }
+
+        if (empty($updates)) {
+            $this->whatsapp->sendText($user->phone, "🙈 Couldn't tell what to change — try being more specific.");
+            return true;
+        }
+
+        $transaction->update($updates);
+
+        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
+        $this->whatsapp->sendText(
+            $user->phone,
+            "✏️ Updated {$emoji} ₹{$transaction->amount} · {$transaction->category}"
+        );
+        return true;
+    }
+
+    protected function searchAndConfirm(User $user, array $intent): bool
+    {
+        $candidates = $this->queryService->findCandidates($user, [
+            'amount' => $intent['search_amount'],
+            'category' => $intent['search_category'] ? TransactionCategory::matchLoose($intent['search_category'])?->value : null,
+            'date' => $intent['search_date'],
+        ]);
+
+        if ($candidates->isEmpty()) {
+            $this->whatsapp->sendText($user->phone, "🤷 Couldn't find a matching transaction.");
+            return true;
+        }
+
+        if ($candidates->count() > 1) {
+            $lines = ["🤔 Found more than one match — can you be more specific?", ""];
+            foreach ($candidates as $t) {
+                $emoji = TransactionCategory::matchLoose($t->category)?->emoji() ?? '📌';
+                $lines[] = "{$emoji} ₹{$t->amount} · {$t->category} · {$t->transaction_date->format('M j')}";
+            }
+            $this->whatsapp->sendText($user->phone, implode("\n", $lines));
+            return true;
+        }
+
+        $transaction = $candidates->first();
+        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
+        $summary = "{$emoji} ₹{$transaction->amount} · {$transaction->category} · {$transaction->transaction_date->format('M j')}";
+
+        ConversationContext::setFor(
+            $user->id,
+            'pending_action',
+            [
+                'transaction_id' => $transaction->id,
+                'action' => $intent['action'],
+                'new_amount' => $intent['new_amount'],
+                'new_category' => $intent['new_category'],
+            ],
+            now()->addMinutes(5)
+        );
+
+        $verb = $intent['action'] === 'delete' ? 'delete' : 'update';
+        $this->whatsapp->sendText($user->phone, "❓ {$summary} — {$verb} this? Reply YES or NO.");
+        return true;
+    }
+
+    protected function resolvePendingAction(User $user, string $message, ConversationContext $context): void
+    {
+        $normalized = strtolower(trim($message));
+
+        if (in_array($normalized, ['yes', 'y', 'confirm', 'yeah', 'yep'])) {
+            $this->executePendingAction($user, $context);
+            return;
+        }
+
+        if (in_array($normalized, ['no', 'n', 'cancel', 'nah', 'nope'])) {
+            $context->delete();
+            $this->whatsapp->sendText($user->phone, "👍 Cancelled.");
+            return;
+        }
+
+        // Not a clear yes/no — leave the context alive (it'll expire on its
+        // own in 5 minutes) rather than guessing or silently discarding it.
+        $this->whatsapp->sendText($user->phone, "❓ Just reply YES or NO to confirm the pending change.");
+    }
+
+    protected function executePendingAction(User $user, ConversationContext $context): void
+    {
+        $payload = $context->payload;
+        $transaction = Transaction::find($payload['transaction_id']);
+        $context->delete();
+
+        if (!$transaction) {
+            $this->whatsapp->sendText($user->phone, "🤷 That transaction's already gone.");
+            return;
+        }
+
+        if ($payload['action'] === 'delete') {
+            $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
+            $summary = "{$emoji} ₹{$transaction->amount} · {$transaction->category}";
+            $transaction->delete();
+
+            $this->whatsapp->sendText($user->phone, "🗑️ Removed {$summary}");
+            return;
+        }
+
+        $updates = [];
+        if ($payload['new_amount'] !== null) {
+            $updates['amount'] = $payload['new_amount'];
+        }
+        if ($payload['new_category'] !== null) {
+            $matched = TransactionCategory::matchLoose($payload['new_category']);
+            if ($matched) {
+                $updates['category'] = $matched->value;
+            }
+        }
+
+        $transaction->update($updates);
+
+        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
+        $this->whatsapp->sendText(
+            $user->phone,
+            "✏️ Updated {$emoji} ₹{$transaction->amount} · {$transaction->category}"
+        );
     }
 }
