@@ -31,9 +31,6 @@ Built as a deep-dive into Laravel (auth, queues, scheduling, jobs, API clients) 
 **Dashboard — ledger, filters, category & trend charts**
 ![Dashboard](docs/screenshots/dashboard.png)
 
-**WhatsApp — requesting and receiving a PDF statement**
-![WhatsApp statement delivery](docs/screenshots/whatsapp-statement.png)
-
 ---
 
 ## Architecture overview
