@@ -24,6 +24,7 @@ class QueryIntentParser
 
         return [
             'recognized' => $response['recognized'],
+            'query_type' => $response['query_type'] ?? 'aggregate',
             'type' => $response['type'] ?? null,
             'category' => $response['category'] ?? null,
             'start_date' => $response['start_date'] ?? null,

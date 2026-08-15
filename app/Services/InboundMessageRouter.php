@@ -207,6 +207,10 @@ class InboundMessageRouter
             return false;
         }
 
+        if ($intent['query_type'] === 'last_transaction') {
+            return $this->replyLastTransaction($user);
+        }
+
         if ($intent['is_comparison']) {
             $comparison = $this->queryService->compare($user, $intent);
 
@@ -224,6 +228,31 @@ class InboundMessageRouter
         $result = $this->queryService->summarize($user, $intent);
 
         $this->whatsapp->sendText($user->phone, $this->formatQueryReply($intent, $result));
+
+        return true;
+    }
+
+    /**
+     * Answers a single-transaction lookup ("what was my last transaction",
+     * "what did I just buy") directly from the last_transaction context —
+     * no aggregation, no query filters. Distinct from handleTransactionAction's
+     * "last" scope, which mutates; this branch only ever reads.
+     */
+    protected function replyLastTransaction(User $user): bool
+    {
+        $context = ConversationContext::activeFor($user->id, 'last_transaction');
+        $transaction = $context ? Transaction::find($context->payload['transaction_id']) : null;
+
+        if (!$transaction) {
+            $this->whatsapp->sendText($user->phone, "🤷 No recent transaction on record.");
+            return true;
+        }
+
+        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
+        $this->whatsapp->sendText(
+            $user->phone,
+            "🧾 {$emoji} ₹{$transaction->amount} · {$transaction->category} · {$transaction->transaction_date->format('M j')}"
+        );
 
         return true;
     }
@@ -251,7 +280,11 @@ class InboundMessageRouter
 
     protected function formatQueryReply(array $intent, array $result): string
     {
-        $label = $intent['category'] ?? ($intent['type'] === 'credit' ? 'income' : 'expenses');
+        $label = $intent['category'] ?? match ($intent['type']) {
+            'credit' => 'income',
+            'debit' => 'expenses',
+            default => 'transactions',
+        };
         $period = $this->describePeriod($intent['start_date'], $intent['end_date']);
 
         if ($result['count'] === 0) {

@@ -36,9 +36,18 @@ class QueryIntentParserAgent implements Agent, HasStructuredOutput
         - recognized: true only if this message is genuinely asking about existing
           spend/income data (e.g. "how much on food this month", "show me transport
           expenses", "what did I spend last week", "list everything above 1000",
-          "compare this month with last month"). If it's ambiguous, a new transaction,
-          a greeting, or unrelated text, set recognized to false and leave every other
-          field null.
+          "compare this month with last month", "what was my last transaction").
+          If it's ambiguous, a new transaction, a greeting, or unrelated text, set
+          recognized to false and leave every other field null (except query_type,
+          which should still be "aggregate").
+        - query_type: "last_transaction" if the user is asking about ONE specific
+          transaction — their single most recent one (e.g. "what was my last
+          transaction", "what did I just buy", "show me my most recent purchase",
+          "what's the latest thing I logged"). "aggregate" for anything asking about
+          totals, sums, or multiple transactions over a period (e.g. "how much on
+          food this month", "list everything above 1000"). Default to "aggregate"
+          when in doubt — "last_transaction" is only for a single specific item, not
+          a filtered list. Required even when recognized is false (use "aggregate").
         - type: "debit" if asking about spending/expenses, "credit" if asking about
           income, "both" if asking about both or unspecified. Null only if unrecognized.
         - category: one of the fixed list below (closest match), or null if no category
@@ -51,14 +60,16 @@ class QueryIntentParserAgent implements Agent, HasStructuredOutput
           today's date. "This month" = 1st of current month to today. "Last week" =
           the 7 days before today. If no time period is mentioned, leave both null
           (meaning: all time). When is_comparison is true, this is the PRIMARY
-          (more recent / first-named) period.
+          (more recent / first-named) period. Leave both null when query_type is
+          "last_transaction".
         - min_amount / max_amount: only set when the user gives an explicit threshold
           (e.g. "above 1000" -> min_amount 1000, "under 500" -> max_amount 500,
           "between 200 and 800" -> both). Otherwise null.
         - is_comparison: true if the user is explicitly asking to compare two time
           periods against each other (e.g. "compare this month with last month",
           "how does this week stack up against last week", "did I spend more in July
-          than June"). False for a plain single-period question.
+          than June"). False for a plain single-period question, and always false
+          when query_type is "last_transaction".
         - compare_start_date / compare_end_date: only set when is_comparison is true —
           the SECOND (earlier / second-named) period being compared against, resolved
           the same way as start_date/end_date. Null when is_comparison is false.
@@ -71,6 +82,7 @@ class QueryIntentParserAgent implements Agent, HasStructuredOutput
     {
         return [
             'recognized' => $schema->boolean()->required(),
+            'query_type' => $schema->string()->enum(['aggregate', 'last_transaction'])->required(),
             'type' => $schema->string()->enum(['credit', 'debit', 'both'])->nullable(),
             'category' => $schema->string()->nullable(),
             'start_date' => $schema->string()->nullable(),
