@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Enums\TransactionCategory;
 use App\Models\User;
 use App\Services\WhatsAppClient;
+use App\Services\WhatsAppMessageFormatter;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
@@ -13,7 +14,7 @@ class SendWeeklySummary extends Command
     protected $signature = 'summary:weekly';
     protected $description = 'Send each approved user their weekly spend summary via WhatsApp';
 
-    public function handle(WhatsAppClient $whatsapp): void
+    public function handle(WhatsAppClient $whatsapp, WhatsAppMessageFormatter $formatter): void
     {
         $users = User::where('status', 'approved')->get();
 
@@ -25,6 +26,7 @@ class SendWeeklySummary extends Command
 
         foreach ($users as $user) {
             $thisWeek = $user->transactions()
+                ->where('status', 'confirmed')
                 ->whereBetween('transaction_date', [$thisWeekStart, $thisWeekEnd])
                 ->get();
 
@@ -33,6 +35,7 @@ class SendWeeklySummary extends Command
             }
 
             $lastWeek = $user->transactions()
+                ->where('status', 'confirmed')
                 ->whereBetween('transaction_date', [$lastWeekStart, $lastWeekEnd])
                 ->get();
 
@@ -48,7 +51,16 @@ class SendWeeklySummary extends Command
                 ->sortDesc()
                 ->take(3);
 
-            $message = $this->formatMessage($totalCredit, $totalDebit, $net, $topCategories, $lastWeekDebit);
+            $message = $this->formatMessage(
+                $totalCredit,
+                $totalDebit,
+                $net,
+                $topCategories,
+                $lastWeekDebit,
+                $thisWeekStart,
+                $thisWeekEnd,
+                $formatter,
+            );
 
             try {
                 $whatsapp->sendText($user->phone, $message);
@@ -61,26 +73,40 @@ class SendWeeklySummary extends Command
         }
     }
 
-    private function formatMessage(float $credit, float $debit, float $net, $topCategories, float $lastWeekDebit): string
-    {
-        $lines = ['📅 *Weekly Summary*'];
-        $lines[] = '💰 Credit: ₹' . number_format($credit, 2);
-        $lines[] = '💸 Debit: ₹' . number_format($debit, 2);
-        $lines[] = ($net >= 0 ? '📈' : '📉') . ' Net: ₹' . number_format($net, 2);
+    private function formatMessage(
+        float $credit,
+        float $debit,
+        float $net,
+        $topCategories,
+        float $lastWeekDebit,
+        $start,
+        $end,
+        WhatsAppMessageFormatter $formatter,
+    ): string {
+        $period = $start->format('M j') . ' - ' . $end->format('M j');
+        $lines = ["📅 *Your weekly money summary* ({$period})", ''];
+        $lines[] = 'Income: ' . $formatter->money($credit);
+        $lines[] = 'Spent: ' . $formatter->money($debit);
+        $lines[] = 'Net: ' . $formatter->money($net);
 
         if ($lastWeekDebit > 0) {
             $diff = $debit - $lastWeekDebit;
             $pct = round(($diff / $lastWeekDebit) * 100, 1);
-            $direction = $diff >= 0 ? '⬆️ up' : '⬇️ down';
-            $lines[] = "\nSpending is {$direction} " . abs($pct) . '% vs last week';
+            $direction = $diff >= 0 ? 'up' : 'down';
+            $lines[] = '';
+            $lines[] = 'Your spending is ' . abs($pct) . "% {$direction} compared with last week.";
         }
 
         if ($topCategories->isNotEmpty()) {
-            $lines[] = "\n🏷️ Top categories:";
+            $lines[] = '';
+            $lines[] = 'Top spending areas:';
             foreach ($topCategories as $category => $amount) {
                 $emoji = TransactionCategory::matchLoose($category)?->emoji() ?? '📌';
-                $lines[] = "{$emoji} {$category}: ₹" . number_format($amount, 2);
+                $lines[] = "{$emoji} {$category}: " . $formatter->money($amount);
             }
+        } elseif ($debit == 0.0) {
+            $lines[] = '';
+            $lines[] = 'No expenses logged this week.';
         }
 
         return implode("\n", $lines);

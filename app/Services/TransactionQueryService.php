@@ -22,11 +22,11 @@ class TransactionQueryService
         }
 
         if (!empty($filters['start_date'])) {
-            $query->where('transaction_date', '>=', $filters['start_date']);
+            $query->whereDate('transaction_date', '>=', $filters['start_date']);
         }
 
         if (!empty($filters['end_date'])) {
-            $query->where('transaction_date', '<=', $filters['end_date']);
+            $query->whereDate('transaction_date', '<=', $filters['end_date']);
         }
 
         if (!empty($filters['min_amount'])) {

@@ -4,8 +4,8 @@ namespace App\Console\Commands;
 
 use App\Models\Budget;
 use App\Models\Transaction;
-use App\Models\User;
 use App\Services\WhatsAppClient;
+use App\Services\WhatsAppMessageFormatter;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -15,7 +15,7 @@ class CheckBudgets extends Command
     protected $signature = 'budgets:check';
     protected $description = 'Check all budgets against current month spend and send WhatsApp alerts on threshold crossing';
 
-    public function handle(WhatsAppClient $whatsapp): int
+    public function handle(WhatsAppClient $whatsapp, WhatsAppMessageFormatter $formatter): int
     {
         $now = Carbon::now('Asia/Kolkata');
         $currentPeriod = $now->format('Y-m');
@@ -54,8 +54,8 @@ class CheckBudgets extends Command
             $label = $budget->isOverall() ? 'overall spending' : $budget->category;
             $percentOfLimit = $limit > 0 ? round(($spent / $limit) * 100) : 0;
 
-            $message = "⚠️ Budget alert: You've spent ₹{$this->fmt($spent)} on {$label} this month "
-                . "({$percentOfLimit}% of your ₹{$this->fmt($limit)} limit).";
+            $message = "Heads up: you've spent {$formatter->money($spent)} on {$label} this month "
+                . "({$percentOfLimit}% of your {$formatter->money($limit)} limit).";
 
             try {
                 $whatsapp->sendText($budget->user->phone, $message);
@@ -71,10 +71,5 @@ class CheckBudgets extends Command
         }
 
         return self::SUCCESS;
-    }
-
-    private function fmt(float $amount): string
-    {
-        return number_format($amount, 2);
     }
 }

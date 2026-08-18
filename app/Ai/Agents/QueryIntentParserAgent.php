@@ -50,9 +50,10 @@ class QueryIntentParserAgent implements Agent, HasStructuredOutput
           about totals, sums, or multiple transactions over a period (e.g. "how much
           on food this month", "list everything above 1000"). Default to "aggregate"
           when in doubt. Required even when recognized is false (use "aggregate").
-        - type: "debit" if asking about spending/expenses, "credit" if asking about
-          income, "both" if asking about both or unspecified. Null only if unrecognized
-          or query_type is "recurring".
+        - type: "debit" if asking about spending/expenses, including category-wise
+          spending or spending breakdowns; "credit" if asking about income;
+          "both" only if asking about both or truly unspecified. Null only if
+          unrecognized or query_type is "recurring".
         - category: one of the fixed list below (closest match), or null if no category
           was mentioned or filtered on.
           Debit categories: Bills, Groceries, Food & Dining, Transport, Shopping,

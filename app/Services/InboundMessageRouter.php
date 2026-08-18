@@ -21,6 +21,7 @@ class InboundMessageRouter
         protected RecurringExpenseDetector $recurringDetector,
         protected StatementRequestParser $statementRequestParser,
         protected StatementGenerator $statementGenerator,
+        protected WhatsAppMessageFormatter $formatter,
     ) {}
 
     public function route(User $user, string $message): void
@@ -84,11 +85,9 @@ class InboundMessageRouter
 
         ConversationContext::setFor($user->id, 'last_transaction', ['transaction_id' => $transaction->id]);
 
-        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
-
         $this->whatsapp->sendText(
             $user->phone,
-            "✅ Logged {$emoji} ₹{$transaction->amount} · {$transaction->category}"
+            '✅ Logged ' . $this->formatter->transaction($transaction)
         );
     }
 
@@ -97,7 +96,7 @@ class InboundMessageRouter
         $transaction->delete();
         $context->delete();
 
-        $this->whatsapp->sendText($user->phone, "🗑️ Discarded — send it again whenever you're ready.");
+        $this->whatsapp->sendText($user->phone, "No problem, I discarded that one. Send it again whenever you're ready.");
     }
 
     protected function correctPending(User $user, Transaction $transaction, ConversationContext $context, array $result): void
@@ -116,11 +115,9 @@ class InboundMessageRouter
 
         ConversationContext::setFor($user->id, 'last_transaction', ['transaction_id' => $transaction->id]);
 
-        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
-
         $this->whatsapp->sendText(
             $user->phone,
-            "✅ Got it — updated & logged {$emoji} ₹{$transaction->amount} · {$transaction->category}"
+            'Done, I updated and logged ' . $this->formatter->transaction($transaction)
         );
     }
 
@@ -149,16 +146,15 @@ class InboundMessageRouter
         $transaction = $context ? Transaction::find($context->payload['transaction_id']) : null;
 
         if (!$transaction) {
-            $this->whatsapp->sendText($user->phone, "🤷 Nothing recent to undo.");
+            $this->whatsapp->sendText($user->phone, "I don't see a recent transaction to undo.");
             return true;
         }
 
-        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
-        $summary = "{$emoji} ₹{$transaction->amount} · {$transaction->category}";
+        $summary = $this->formatter->transaction($transaction);
         $transaction->delete();
         $context->delete();
 
-        $this->whatsapp->sendText($user->phone, "🗑️ Removed {$summary}");
+        $this->whatsapp->sendText($user->phone, "Removed {$summary}.");
         return true;
     }
 
@@ -168,13 +164,12 @@ class InboundMessageRouter
         $transaction = $context ? Transaction::find($context->payload['transaction_id']) : null;
 
         if (!$transaction) {
-            $this->whatsapp->sendText($user->phone, "🤷 Nothing recent to edit.");
+            $this->whatsapp->sendText($user->phone, "I don't see a recent transaction to edit.");
             return true;
         }
 
         $transaction->update(['amount' => $amount]);
-        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
-        $this->whatsapp->sendText($user->phone, "✏️ Updated {$emoji} ₹{$amount} · {$transaction->category}");
+        $this->whatsapp->sendText($user->phone, 'Updated it to ' . $this->formatter->transaction($transaction) . '.');
         return true;
     }
 
@@ -184,7 +179,7 @@ class InboundMessageRouter
         $transaction = $context ? Transaction::find($context->payload['transaction_id']) : null;
 
         if (!$transaction) {
-            $this->whatsapp->sendText($user->phone, "🤷 Nothing recent to edit.");
+            $this->whatsapp->sendText($user->phone, "I don't see a recent transaction to edit.");
             return true;
         }
 
@@ -193,13 +188,13 @@ class InboundMessageRouter
         if (!$matched) {
             $this->whatsapp->sendText(
                 $user->phone,
-                "🙈 \"{$category}\" isn't a category I recognize. Try one of: Bills, Groceries, Food & Dining, Transport, Shopping, Entertainment, Health, Rent, Salary, Freelance, Refund, Gift, Other."
+                "I don't recognize \"{$category}\" as a category yet. Try Bills, Groceries, Food & Dining, Transport, Shopping, Entertainment, Health, Rent, Salary, Freelance, Refund, Gift, or Other."
             );
             return true;
         }
 
         $transaction->update(['category' => $matched->value]);
-        $this->whatsapp->sendText($user->phone, "✏️ Updated {$matched->emoji()} ₹{$transaction->amount} · {$matched->value}");
+        $this->whatsapp->sendText($user->phone, 'Updated it to ' . $this->formatter->transaction($transaction) . '.');
         return true;
     }
 
@@ -239,14 +234,14 @@ class InboundMessageRouter
             if ($sent) {
                 $periodLabel = $start->isSameDay($end)
                     ? $start->format('M j')
-                    : "{$start->format('M j')} – {$end->format('M j')}";
+                    : $start->format('M j') . ' - ' . $end->format('M j');
 
-                $this->whatsapp->sendText($user->phone, "📄 Here's your statement ({$periodLabel}).");
+                $this->whatsapp->sendText($user->phone, "I've sent your statement for {$periodLabel}.");
             } else {
-                $this->whatsapp->sendText($user->phone, "⚠️ Couldn't send that statement — try again in a bit.");
+                $this->whatsapp->sendText($user->phone, "I couldn't send that statement right now. Please try again in a bit.");
             }
         } catch (\Throwable $e) {
-            $this->whatsapp->sendText($user->phone, "⚠️ Something went wrong generating that statement — try again in a bit.");
+            $this->whatsapp->sendText($user->phone, "I couldn't generate that statement right now. Please try again in a bit.");
         } finally {
             if ($path && file_exists($path)) {
                 @unlink($path);
@@ -268,6 +263,8 @@ class InboundMessageRouter
             return false;
         }
 
+        $intent = $this->normalizeSpendingIntent($message, $intent);
+
         if ($intent['query_type'] === 'last_transaction') {
             return $this->replyLastTransaction($user);
         }
@@ -281,7 +278,7 @@ class InboundMessageRouter
 
             try {
                 $summary = $this->narrativeSummary->narrate($comparison, $intent['category']);
-                $reply = "📊 " . $summary;
+                $reply = '📊 ' . $summary;
             } catch (\Throwable $e) {
                 $reply = $this->formatComparisonReply($intent, $comparison);
             }
@@ -309,14 +306,13 @@ class InboundMessageRouter
         $transaction = $context ? Transaction::find($context->payload['transaction_id']) : null;
 
         if (!$transaction) {
-            $this->whatsapp->sendText($user->phone, "🤷 No recent transaction on record.");
+            $this->whatsapp->sendText($user->phone, "I don't see a recent transaction yet.");
             return true;
         }
 
-        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
         $this->whatsapp->sendText(
             $user->phone,
-            "🧾 {$emoji} ₹{$transaction->amount} · {$transaction->category} · {$transaction->transaction_date->format('M j')}"
+            'Your latest transaction is ' . $this->formatter->transaction($transaction, true) . '.'
         );
 
         return true;
@@ -333,16 +329,16 @@ class InboundMessageRouter
         $patterns = $this->recurringDetector->detect($user);
 
         if (empty($patterns)) {
-            $this->whatsapp->sendText($user->phone, "🔁 No recurring expenses detected yet.");
+            $this->whatsapp->sendText($user->phone, "I don't see any recurring expenses yet.");
             return true;
         }
 
-        $lines = ["🔁 Likely recurring expenses:", ""];
+        $lines = ['I found a few likely recurring expenses:', ''];
 
         foreach ($patterns as $pattern) {
             $emoji = TransactionCategory::matchLoose($pattern['category'])?->emoji() ?? '📌';
             $interval = round($pattern['average_interval_days']);
-            $lines[] = "{$emoji} {$pattern['category']}: ₹{$pattern['average_amount']} · every ~{$interval} days · {$pattern['occurrences']}x";
+            $lines[] = "{$emoji} {$pattern['category']}: " . $this->formatter->money($pattern['average_amount']) . " every ~{$interval} days ({$pattern['occurrences']} times)";
         }
 
         $this->whatsapp->sendText($user->phone, implode("\n", $lines));
@@ -357,39 +353,39 @@ class InboundMessageRouter
 
         $direction = $delta > 0 ? 'more' : ($delta < 0 ? 'less' : 'the same');
         $deltaLine = $prior['total'] > 0
-            ? sprintf('That\'s ₹%s %s than the previous period.', number_format(abs($delta), 2), $direction)
-            : 'No prior-period data to compare against.';
+            ? sprintf("That's %s %s than the previous period.", $this->formatter->money(abs($delta)), $direction)
+            : "I don't have prior-period data to compare against.";
 
         return sprintf(
-            "📊 This period: ₹%s (%d txns). Previous period: ₹%s (%d txns). %s",
-            number_format($primary['total'], 2),
+            '📊 This period: %s across %d %s. Previous period: %s across %d %s. %s',
+            $this->formatter->money($primary['total']),
             $primary['count'],
-            number_format($prior['total'], 2),
+            $this->plural('transaction', $primary['count']),
+            $this->formatter->money($prior['total']),
             $prior['count'],
+            $this->plural('transaction', $prior['count']),
             $deltaLine
         );
     }
 
     protected function formatQueryReply(array $intent, array $result): string
     {
-        $label = $intent['category'] ?? match ($intent['type']) {
-            'credit' => 'income',
-            'debit' => 'expenses',
-            default => 'transactions',
-        };
+        $type = $intent['type'] ?? 'both';
         $period = $this->describePeriod($intent['start_date'], $intent['end_date']);
+        $scope = $this->queryScopeLabel($intent);
 
         if ($result['count'] === 0) {
-            return "🔍 No transactions found for {$label}{$period}.";
+            return "I couldn't find any {$scope}{$period}.";
         }
 
-        $lines = ["🔍 ₹{$result['total']} across {$result['count']} transaction(s) for {$label}{$period}."];
+        $lines = [$this->queryTotalSentence($type, $intent['category'], $result, $period)];
 
         if (!empty($result['by_category'])) {
-            $lines[] = "";
+            $lines[] = '';
+            $lines[] = $type === 'credit' ? 'By income category:' : 'By category:';
             foreach ($result['by_category'] as $category => $amount) {
                 $emoji = TransactionCategory::matchLoose($category)?->emoji() ?? '📌';
-                $lines[] = "{$emoji} {$category}: ₹{$amount}";
+                $lines[] = "{$emoji} {$category}: " . $this->formatter->money($amount);
             }
         }
 
@@ -402,9 +398,86 @@ class InboundMessageRouter
             return '';
         }
 
-        return $start === $end
-            ? " on {$start}"
-            : " from {$start} to {$end}";
+        if ($start && $start === $end) {
+            return ' on ' . Carbon::parse($start)->format('M j');
+        }
+
+        if ($start && $end) {
+            return ' from ' . Carbon::parse($start)->format('M j') . ' to ' . Carbon::parse($end)->format('M j');
+        }
+
+        if ($start) {
+            return ' since ' . Carbon::parse($start)->format('M j');
+        }
+
+        return ' until ' . Carbon::parse($end)->format('M j');
+    }
+
+    protected function queryTotalSentence(string $type, ?string $category, array $result, string $period): string
+    {
+        $count = $result['count'];
+        $transactions = $this->plural('transaction', $count);
+        $amount = $this->formatter->money($result['total']);
+
+        if ($category) {
+            return match ($type) {
+                'credit' => "You received {$amount} in {$category} across {$count} {$transactions}{$period}.",
+                'debit' => "You spent {$amount} on {$category} across {$count} {$transactions}{$period}.",
+                default => "You logged {$amount} in {$category} across {$count} {$transactions}{$period}.",
+            };
+        }
+
+        return match ($type) {
+            'credit' => "You received {$amount} across {$count} {$transactions}{$period}.",
+            'debit' => "You spent {$amount} across {$count} {$transactions}{$period}.",
+            default => "You logged {$amount} across {$count} {$transactions}{$period}.",
+        };
+    }
+
+    protected function queryScopeLabel(array $intent): string
+    {
+        $type = $intent['type'] ?? 'both';
+        $category = $intent['category'] ?? null;
+
+        if ($category) {
+            return match ($type) {
+                'credit' => "{$category} income",
+                'debit' => "{$category} spending",
+                default => "{$category} transactions",
+            };
+        }
+
+        return match ($type) {
+            'credit' => 'income',
+            'debit' => 'expenses',
+            default => 'transactions',
+        };
+    }
+
+    protected function normalizeSpendingIntent(string $message, array $intent): array
+    {
+        if (($intent['query_type'] ?? null) !== 'aggregate') {
+            return $intent;
+        }
+
+        if (!in_array($intent['type'] ?? null, [null, 'both'], true)) {
+            return $intent;
+        }
+
+        $lower = strtolower($message);
+        $mentionsIncome = preg_match('/\b(income|salary|credit|earned|received|freelance|refund|gift)\b/i', $lower);
+        $mentionsSpending = preg_match('/\b(spend|spent|spending|expense|expenses|debit|paid|payment)\b/i', $lower);
+
+        if ($mentionsSpending && !$mentionsIncome) {
+            $intent['type'] = 'debit';
+        }
+
+        return $intent;
+    }
+
+    protected function plural(string $word, int $count): string
+    {
+        return $count === 1 ? $word : $word . 's';
     }
 
     /**
@@ -441,17 +514,16 @@ class InboundMessageRouter
         $transaction = $context ? Transaction::find($context->payload['transaction_id']) : null;
 
         if (!$transaction) {
-            $this->whatsapp->sendText($user->phone, "🤷 Nothing recent to work with.");
+            $this->whatsapp->sendText($user->phone, "I don't see a recent transaction to work with.");
             return true;
         }
 
         if ($intent['action'] === 'delete') {
-            $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
-            $summary = "{$emoji} ₹{$transaction->amount} · {$transaction->category}";
+            $summary = $this->formatter->transaction($transaction);
             $transaction->delete();
             $context->delete();
 
-            $this->whatsapp->sendText($user->phone, "🗑️ Removed {$summary}");
+            $this->whatsapp->sendText($user->phone, "Removed {$summary}.");
             return true;
         }
 
@@ -467,16 +539,15 @@ class InboundMessageRouter
         }
 
         if (empty($updates)) {
-            $this->whatsapp->sendText($user->phone, "🙈 Couldn't tell what to change — try being more specific.");
+            $this->whatsapp->sendText($user->phone, "I couldn't tell what to change. Try adding the new amount or category.");
             return true;
         }
 
         $transaction->update($updates);
 
-        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
         $this->whatsapp->sendText(
             $user->phone,
-            "✏️ Updated {$emoji} ₹{$transaction->amount} · {$transaction->category}"
+            'Updated it to ' . $this->formatter->transaction($transaction) . '.'
         );
         return true;
     }
@@ -490,23 +561,21 @@ class InboundMessageRouter
         ]);
 
         if ($candidates->isEmpty()) {
-            $this->whatsapp->sendText($user->phone, "🤷 Couldn't find a matching transaction.");
+            $this->whatsapp->sendText($user->phone, "I couldn't find a matching transaction.");
             return true;
         }
 
         if ($candidates->count() > 1) {
-            $lines = ["🤔 Found more than one match — can you be more specific?", ""];
+            $lines = ['I found more than one match. Can you be a bit more specific?', ''];
             foreach ($candidates as $t) {
-                $emoji = TransactionCategory::matchLoose($t->category)?->emoji() ?? '📌';
-                $lines[] = "{$emoji} ₹{$t->amount} · {$t->category} · {$t->transaction_date->format('M j')}";
+                $lines[] = $this->formatter->transaction($t, true);
             }
             $this->whatsapp->sendText($user->phone, implode("\n", $lines));
             return true;
         }
 
         $transaction = $candidates->first();
-        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
-        $summary = "{$emoji} ₹{$transaction->amount} · {$transaction->category} · {$transaction->transaction_date->format('M j')}";
+        $summary = $this->formatter->transaction($transaction, true);
 
         ConversationContext::setFor(
             $user->id,
@@ -521,7 +590,7 @@ class InboundMessageRouter
         );
 
         $verb = $intent['action'] === 'delete' ? 'delete' : 'update';
-        $this->whatsapp->sendText($user->phone, "❓ {$summary} — {$verb} this? Reply YES or NO.");
+        $this->whatsapp->sendText($user->phone, "Just to confirm, should I {$verb} this?\n{$summary}\nReply YES or NO.");
         return true;
     }
 
@@ -536,13 +605,13 @@ class InboundMessageRouter
 
         if (in_array($normalized, ['no', 'n', 'cancel', 'nah', 'nope'])) {
             $context->delete();
-            $this->whatsapp->sendText($user->phone, "👍 Cancelled.");
+            $this->whatsapp->sendText($user->phone, 'Cancelled. No changes made.');
             return;
         }
 
         // Not a clear yes/no — leave the context alive (it'll expire on its
         // own in 5 minutes) rather than guessing or silently discarding it.
-        $this->whatsapp->sendText($user->phone, "❓ Just reply YES or NO to confirm the pending change.");
+        $this->whatsapp->sendText($user->phone, 'Please reply YES or NO so I know whether to make that change.');
     }
 
     protected function executePendingAction(User $user, ConversationContext $context): void
@@ -552,16 +621,15 @@ class InboundMessageRouter
         $context->delete();
 
         if (!$transaction) {
-            $this->whatsapp->sendText($user->phone, "🤷 That transaction's already gone.");
+            $this->whatsapp->sendText($user->phone, "That transaction is already gone, so there's nothing to change.");
             return;
         }
 
         if ($payload['action'] === 'delete') {
-            $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
-            $summary = "{$emoji} ₹{$transaction->amount} · {$transaction->category}";
+            $summary = $this->formatter->transaction($transaction);
             $transaction->delete();
 
-            $this->whatsapp->sendText($user->phone, "🗑️ Removed {$summary}");
+            $this->whatsapp->sendText($user->phone, "Removed {$summary}.");
             return;
         }
 
@@ -578,10 +646,9 @@ class InboundMessageRouter
 
         $transaction->update($updates);
 
-        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
         $this->whatsapp->sendText(
             $user->phone,
-            "✏️ Updated {$emoji} ₹{$transaction->amount} · {$transaction->category}"
+            'Updated it to ' . $this->formatter->transaction($transaction) . '.'
         );
     }
 }

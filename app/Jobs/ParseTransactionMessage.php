@@ -2,12 +2,12 @@
 
 namespace App\Jobs;
 
-use App\Enums\TransactionCategory;
 use App\Models\ConversationContext;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Services\TransactionParser;
 use App\Services\WhatsAppClient;
+use App\Services\WhatsAppMessageFormatter;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -40,7 +40,7 @@ class ParseTransactionMessage implements ShouldQueue
      * this way: don't move Transaction::create() before the try/catch, or
      * a retried attempt could create duplicate rows.
      */
-    public function handle(TransactionParser $parser, WhatsAppClient $whatsapp): void
+    public function handle(TransactionParser $parser, WhatsAppClient $whatsapp, WhatsAppMessageFormatter $formatter): void
     {
         try {
             $parsed = $parser->parse($this->message);
@@ -57,7 +57,7 @@ class ParseTransactionMessage implements ShouldQueue
         if (($parsed['type'] ?? 'unknown') === 'unknown') {
             $whatsapp->sendText(
                 $this->user->phone,
-                "🙈 Couldn't quite catch that one. Try something like \"spent 300 on groceries\" or \"got 5k salary\"."
+                "I couldn't read that as a transaction. Try something like \"spent 300 on groceries\" or \"got 5k salary\"."
             );
             return;
         }
@@ -78,8 +78,6 @@ class ParseTransactionMessage implements ShouldQueue
             'transaction_date' => $parsed['transaction_date'] ?? now()->toDateString(),
         ]);
 
-        $emoji = TransactionCategory::matchLoose($transaction->category)?->emoji() ?? '📌';
-
         if ($status === 'confirmed') {
             ConversationContext::setFor(
                 $this->user->id,
@@ -89,7 +87,7 @@ class ParseTransactionMessage implements ShouldQueue
 
             $sent = $whatsapp->sendTextSucceeded(
                 $this->user->phone,
-                "✅ Logged {$emoji} ₹{$transaction->amount} · {$transaction->category}"
+                'Logged ' . $formatter->transaction($transaction) . '.'
             );
         } else {
             ConversationContext::setFor(
@@ -101,7 +99,7 @@ class ParseTransactionMessage implements ShouldQueue
 
             $sent = $whatsapp->sendTextSucceeded(
                 $this->user->phone,
-                "🤔 Got ₹{$transaction->amount} for {$emoji} {$transaction->category} — is that right? Reply *YES* or *NO*."
+                'I read this as ' . $formatter->transaction($transaction) . ". Is that right? Reply YES or NO."
             );
         }
 
@@ -131,7 +129,7 @@ class ParseTransactionMessage implements ShouldQueue
         try {
             app(WhatsAppClient::class)->sendText(
                 $this->user->phone,
-                "⚠️ Something went wrong on my end — mind trying that again in a bit?"
+                "Something went wrong while reading that message. Please try sending it again in a bit."
             );
         } catch (\Throwable $e) {
             // Don't let a failure-notification failure mask the real error above.
