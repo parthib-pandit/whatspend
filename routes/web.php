@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Admin\UserApprovalController;
 use App\Http\Controllers\TransactionController;
 use App\Http\Controllers\WhatsAppWebhookController;
+use App\Http\Controllers\BudgetController;
 
 Route::get('/', function () {
     return view('welcome');
@@ -21,6 +22,10 @@ Route::middleware('auth')->group(function () {
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
     Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
     Route::resource('transactions', TransactionController::class)->except(['show']);
+    Route::get('/budgets', [BudgetController::class, 'index'])->name('budgets.index');
+    Route::post('/budgets', [BudgetController::class, 'store'])->name('budgets.store');
+    Route::put('/budgets/{budget}', [BudgetController::class, 'update'])->name('budgets.update');
+    Route::delete('/budgets/{budget}', [BudgetController::class, 'destroy'])->name('budgets.destroy');
 });
 
 Route::middleware(['auth', 'admin'])->prefix('admin')->name('admin.')->group(function () {
