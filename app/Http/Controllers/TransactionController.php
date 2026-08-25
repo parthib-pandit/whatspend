@@ -34,7 +34,7 @@ class TransactionController extends Controller
         $monthlyTrend = Transaction::where('user_id', auth()->id())
             ->where('type', 'debit')
             ->where('transaction_date', '>=', now()->subMonths(11)->startOfMonth())
-            ->selectRaw("strftime('%Y-%m', transaction_date) as month, SUM(amount) as total")
+            ->selectRaw("DATE_FORMAT(transaction_date, '%Y-%m') as month, SUM(amount) as total")
             ->groupBy('month')
             ->orderBy('month')
             ->get();
