@@ -90,17 +90,41 @@ class ParseTransactionMessage implements ShouldQueue
                 'Logged ' . $formatter->transaction($transaction) . '.'
             );
         } else {
-            ConversationContext::setFor(
-                $this->user->id,
-                'pending_review',
-                ['transaction_id' => $transaction->id],
-                now()->addMinutes(5),
-            );
+            $existingPending = ConversationContext::activeFor($this->user->id, 'pending_review');
 
-            $sent = $whatsapp->sendTextSucceeded(
-                $this->user->phone,
-                'I read this as ' . $formatter->transaction($transaction) . ". Is that right? Reply YES or NO."
-            );
+            if ($existingPending) {
+                // Don't overwrite — queue this one behind whatever's
+                // already awaiting confirmation, so neither transaction
+                // gets silently orphaned. Extends the expiry so the
+                // backlog isn't cut short mid-queue.
+                $backlog = $existingPending->payload['backlog'] ?? [];
+                $backlog[] = $transaction->id;
+
+                $existingPending->update([
+                    'payload' => [
+                        'transaction_id' => $existingPending->payload['transaction_id'],
+                        'backlog' => $backlog,
+                    ],
+                    'expires_at' => now()->addMinutes(5),
+                ]);
+
+                $sent = $whatsapp->sendTextSucceeded(
+                    $this->user->phone,
+                    'I read this as ' . $formatter->transaction($transaction) . ". You've still got an earlier one waiting on YES/NO though — I'll ask about this one once that's sorted (send \"pending\" to see everything waiting)."
+                );
+            } else {
+                ConversationContext::setFor(
+                    $this->user->id,
+                    'pending_review',
+                    ['transaction_id' => $transaction->id, 'backlog' => []],
+                    now()->addMinutes(5),
+                );
+
+                $sent = $whatsapp->sendTextSucceeded(
+                    $this->user->phone,
+                    'I read this as ' . $formatter->transaction($transaction) . ". Is that right? Reply YES or NO."
+                );
+            }
         }
 
         // The transaction is already correctly saved at this point regardless

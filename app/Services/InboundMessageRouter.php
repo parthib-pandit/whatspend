@@ -24,8 +24,13 @@ class InboundMessageRouter
         protected WhatsAppMessageFormatter $formatter,
     ) {}
 
-    public function route(User $user, string $message): void
-    {
+        public function route(User $user, string $message): void
+        {
+        if (strtolower(trim($message)) === 'pending') {
+            $this->listPending($user);
+            return;
+        }
+
         $pendingContext = ConversationContext::activeFor($user->id, 'pending_review');
 
         if ($pendingContext) {
@@ -81,7 +86,7 @@ class InboundMessageRouter
     protected function confirmPending(User $user, Transaction $transaction, ConversationContext $context): void
     {
         $transaction->update(['status' => 'confirmed']);
-        $context->delete();
+        $this->advanceOrClosePendingReview($user, $context);
 
         ConversationContext::setFor($user->id, 'last_transaction', ['transaction_id' => $transaction->id]);
 
@@ -94,7 +99,7 @@ class InboundMessageRouter
     protected function rejectPending(User $user, Transaction $transaction, ConversationContext $context): void
     {
         $transaction->delete();
-        $context->delete();
+        $this->advanceOrClosePendingReview($user, $context);
 
         $this->whatsapp->sendText($user->phone, "No problem, I discarded that one. Send it again whenever you're ready.");
     }
@@ -111,7 +116,7 @@ class InboundMessageRouter
         }
 
         $transaction->update($updates);
-        $context->delete();
+        $this->advanceOrClosePendingReview($user, $context);
 
         ConversationContext::setFor($user->id, 'last_transaction', ['transaction_id' => $transaction->id]);
 
@@ -119,6 +124,76 @@ class InboundMessageRouter
             $user->phone,
             'Done, I updated and logged ' . $this->formatter->transaction($transaction)
         );
+    }
+
+        /**
+     * Called after a pending_review context is resolved (confirmed,
+     * rejected, or corrected). If another low-confidence transaction
+     * came in while this one was awaiting confirmation, it was queued
+     * into this context's backlog instead of overwriting it (see
+     * ParseTransactionMessage) — this promotes the next queued
+     * transaction into a fresh pending_review context instead of leaving
+     * it orphaned.
+     */
+    protected function advanceOrClosePendingReview(User $user, ConversationContext $context): void
+    {
+        $backlog = $context->payload['backlog'] ?? [];
+        $context->delete();
+
+        while (!empty($backlog)) {
+            $nextId = array_shift($backlog);
+            $next = Transaction::find($nextId);
+
+            if (!$next) {
+                continue; // gone somehow — skip to the next queued one
+            }
+
+            ConversationContext::setFor(
+                $user->id,
+                'pending_review',
+                ['transaction_id' => $next->id, 'backlog' => $backlog],
+                now()->addMinutes(5),
+            );
+
+            $this->whatsapp->sendText(
+                $user->phone,
+                'Next up — I read this as ' . $this->formatter->transaction($next) . ". Is that right? Reply YES or NO."
+            );
+            return;
+        }
+    }
+
+    /**
+     * WhatsApp "pending" command — lists every transaction currently
+     * awaiting YES/NO confirmation (the active one plus anything queued
+     * behind it in the backlog), so nothing gets silently stuck.
+     */
+    protected function listPending(User $user): void
+    {
+        $context = ConversationContext::activeFor($user->id, 'pending_review');
+
+        if (!$context) {
+            $this->whatsapp->sendText($user->phone, "Nothing's waiting on confirmation right now.");
+            return;
+        }
+
+        $ids = array_merge([$context->payload['transaction_id']], $context->payload['backlog'] ?? []);
+        $transactions = collect($ids)->map(fn ($id) => Transaction::find($id))->filter();
+
+        if ($transactions->isEmpty()) {
+            $this->whatsapp->sendText($user->phone, "Nothing's waiting on confirmation right now.");
+            return;
+        }
+
+        $lines = ['Waiting on your confirmation:', ''];
+        foreach ($transactions->values() as $i => $t) {
+            $marker = $i === 0 ? '👉' : '  ';
+            $lines[] = "{$marker} " . $this->formatter->transaction($t, true);
+        }
+        $lines[] = '';
+        $lines[] = "Reply YES or NO to handle the first one — I'll move to the next automatically.";
+
+        $this->whatsapp->sendText($user->phone, implode("\n", $lines));
     }
 
     protected function handleUndoEdit(User $user, string $message): bool
