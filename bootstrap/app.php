@@ -14,6 +14,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
             'admin' => \App\Http\Middleware\EnsureUserIsAdmin::class,
+            'block-demo-writes' => \App\Http\Middleware\BlockDemoWrites::class,
         ]);
         $middleware->validateCsrfTokens(except: [
             'webhook/whatsapp',
