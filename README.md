@@ -163,3 +163,25 @@ php artisan queue:work
 | Voice-note logging | New input pipeline (audio download + transcription stage) — extra latency and cost per message |
 | True semantic search | Needs embeddings at write-time + a vector index + similarity search at query-time — ongoing cost forever, not a one-off. Filter-based search already covers most realistic queries |
 | Agentic multi-step tool-calling | Multiple LLM round-trips per message, harder to keep deterministic/auditable — conflicts directly with the "LLM extracts, Laravel computes" principle the whole project is built around |
+
+---
+
+## What I'd add for a production version
+
+Whatspend is built to serve ~10-15 trusted users on a shared-number, admin-approved model — that scope is intentional, not a limitation I ran out of time to fix. Turning this into a real multi-tenant product would mean confronting several genuinely different problems, not just hardening what's here. In rough order of how fundamental each gap is:
+
+- **Multi-tenant WhatsApp architecture.** This is the real fork, not an incremental addition. Today every user shares one WhatsApp Business number, routed by phone-number lookup — fine at trusted-friend scale, but it doesn't scale to unrelated tenants who each expect their own number/branding. Getting there means either per-tenant numbers through a Business Solution Provider (real recurring cost per tenant) or a shared-number architecture with much stricter tenant isolation than a `user_id` foreign key — a structural decision that ripples through the webhook layer, the LLM prompt context, and billing, not something you bolt on later.
+- **Bank sync (Account Aggregator / Setu-style integration).** The highest perceived-value gap for actual users — nobody wants to manually text every transaction forever. Not started; it's a genuinely separate integration surface (consent flows, account linking, transaction reconciliation against what's already logged via WhatsApp) rather than an extension of the existing parsing pipeline.
+- **DPDP Act compliance.** Consent capture, data export, right-to-delete, and a defined breach-notification process. Currently informal (a WhatsApp message and a friend's word), which is fine for family/friends and not fine the moment this holds a stranger's financial data.
+- **Ops/reliability layer.** No error monitoring, uptime alerting, structured/centralized logging, or load testing beyond manual tinker sessions. At 10-15 users a failed cron job is a message from a friend; at real scale it's silent data loss.
+- **Security hardening beyond current throttles.** No 2FA, no dependency-vulnerability scanning in CI, and the admin-approval model assumes a single trusted admin rather than role-based access control.
+- **Billing, self-service signup, and admin tooling.** Signup today is admin-approved by design — deliberately, to avoid the multi-tenant number problem above. A real product needs self-service onboarding, subscription/billing logic, and an admin surface built for many tenants, not one person eyeballing a user list.
+- **Multi-currency, multi-account tracking, and a net-worth view.** Currently single-currency and treats all logged transactions as one pool. Real personal finance tracking usually spans multiple accounts/currencies and wants a consolidated net-worth picture, which is a data-model change (accounts as a first-class entity), not just a display feature.
+
+The throughline: most of what's *built* here is deliberately deterministic and cheap (see "Key design decisions" above), and I'd keep that principle even at production scale — the gaps above are mostly about trust, isolation, and compliance surface area that only matter once tenants aren't people you already know.
+
+---
+
+## License
+
+MIT
