@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use App\Support\PhoneNumberNormalizer;
 
 class WhatsAppWebhookController extends Controller
 {
@@ -31,22 +32,30 @@ class WhatsAppWebhookController extends Controller
 
         $fromPhone = $entry['from'];
         $body = $entry['text']['body'] ?? null;
-        $user = \App\Models\User::where('phone', '+' . ltrim($fromPhone, '+'))->first();
+        $normalizedPhone = \App\Support\PhoneNumberNormalizer::toStorageFormat($fromPhone);
+        $user = \App\Models\User::where('phone', $normalizedPhone)->first();
 
         \App\Models\WhatsAppMessage::create([
             'user_id' => $user?->id,
             'direction' => 'inbound',
-            'phone' => $fromPhone,
+            'phone' => $normalizedPhone,
             'body' => $body,
         ]);
 
-        if (!$user || $user->status !== 'approved') {
+        if (!$body) {
             return response('OK', 200);
         }
 
-        if ($body) {
-            \App\Jobs\RouteInboundMessage::dispatch($user, $body);
+        if (!$user) {
+            \App\Jobs\RouteUnknownMessage::dispatch($normalizedPhone, $body);
+            return response('OK', 200);
         }
+
+        if ($user->status !== 'approved') {
+            return response('OK', 200);
+        }
+
+        \App\Jobs\RouteInboundMessage::dispatch($user, $body);
 
         return response('OK', 200);
     }

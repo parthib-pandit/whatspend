@@ -1,15 +1,23 @@
 <x-guest-layout>
+    <div class="mb-4 text-sm text-gray-600">
+        {{ __('Enter the code we sent you on WhatsApp, along with your new password.') }}
+    </div>
+
     <form method="POST" action="{{ route('password.store') }}">
         @csrf
 
-        <!-- Password Reset Token -->
-        <input type="hidden" name="token" value="{{ $request->route('token') }}">
-
-        <!-- Email Address -->
+        <!-- Phone Number -->
         <div>
-            <x-input-label for="email" :value="__('Email')" />
-            <x-text-input id="email" class="block mt-1 w-full" type="email" name="email" :value="old('email', $request->email)" required autofocus autocomplete="username" />
-            <x-input-error :messages="$errors->get('email')" class="mt-2" />
+            <x-input-label for="phone" :value="__('Phone Number')" />
+            <x-text-input id="phone" class="block mt-1 w-full" type="text" name="phone" :value="old('phone', $request->phone)" required autofocus />
+            <x-input-error :messages="$errors->get('phone')" class="mt-2" />
+        </div>
+
+        <!-- OTP Code -->
+        <div class="mt-4">
+            <x-input-label for="otp_code" :value="__('Reset Code')" />
+            <x-text-input id="otp_code" class="block mt-1 w-full" type="text" name="otp_code" :value="old('otp_code')" required autocomplete="one-time-code" />
+            <x-input-error :messages="$errors->get('otp_code')" class="mt-2" />
         </div>
 
         <!-- Password -->
@@ -24,8 +32,8 @@
             <x-input-label for="password_confirmation" :value="__('Confirm Password')" />
 
             <x-text-input id="password_confirmation" class="block mt-1 w-full"
-                                type="password"
-                                name="password_confirmation" required autocomplete="new-password" />
+                            type="password"
+                            name="password_confirmation" required autocomplete="new-password" />
 
             <x-input-error :messages="$errors->get('password_confirmation')" class="mt-2" />
         </div>

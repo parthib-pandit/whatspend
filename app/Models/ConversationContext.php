@@ -12,6 +12,7 @@ class ConversationContext extends Model
 
     protected $fillable = [
         'user_id',
+        'phone',
         'type',
         'payload',
         'expires_at',
@@ -56,6 +57,28 @@ class ConversationContext extends Model
 
         return static::create([
             'user_id' => $userId,
+            'type' => $type,
+            'payload' => $payload,
+            'expires_at' => $expiresAt,
+        ]);
+    }
+
+    public static function activeForPhone(string $phone, string $type): ?self
+    {
+        return static::whereNull('user_id')
+            ->where('phone', $phone)
+            ->where('type', $type)
+            ->active()
+            ->latest()
+            ->first();
+    }
+
+    public static function setForPhone(string $phone, string $type, array $payload, ?\DateTimeInterface $expiresAt = null): self
+    {
+        static::whereNull('user_id')->where('phone', $phone)->where('type', $type)->delete();
+
+        return static::create([
+            'phone' => $phone,
             'type' => $type,
             'payload' => $payload,
             'expires_at' => $expiresAt,

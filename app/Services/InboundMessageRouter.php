@@ -8,6 +8,8 @@ use App\Models\ConversationContext;
 use App\Models\Transaction;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 
 class InboundMessageRouter
 {
@@ -725,5 +727,92 @@ class InboundMessageRouter
             $user->phone,
             'Updated it to ' . $this->formatter->transaction($transaction) . '.'
         );
+    }
+    public function routeUnknown(string $phone, string $message): void
+    {
+        $context = ConversationContext::activeForPhone($phone, 'signup_flow');
+
+        if ($context) {
+            $this->continueSignup($phone, $message, $context);
+            return;
+        }
+
+        $this->startSignup($phone);
+    }
+
+    protected function startSignup(string $phone): void
+    {
+        ConversationContext::setForPhone($phone, 'signup_flow', ['step' => 'ask_name'], now()->addMinutes(15));
+
+        $this->whatsapp->sendText($phone, "Looks like you're new here! 👋 What's your name?");
+    }
+
+    protected function continueSignup(string $phone, string $message, ConversationContext $context): void
+    {
+        $step = $context->payload['step'] ?? 'ask_name';
+
+        match ($step) {
+            'ask_name' => $this->signupCollectName($phone, $message, $context),
+            'confirm' => $this->signupConfirm($phone, $message, $context),
+            default => $this->startSignup($phone),
+        };
+    }
+
+    protected function signupCollectName(string $phone, string $message, ConversationContext $context): void
+    {
+        $name = trim($message);
+
+        if ($name === '' || mb_strlen($name) > 100) {
+            $this->whatsapp->sendText($phone, "Sorry, I didn't catch that — what's your name?");
+            return;
+        }
+
+        ConversationContext::setForPhone($phone, 'signup_flow', ['step' => 'confirm', 'name' => $name], now()->addMinutes(15));
+
+        $this->whatsapp->sendText($phone, "Thanks, {$name}! Should I create your account? Reply YES to confirm, or NO to start over.");
+    }
+
+    protected function signupConfirm(string $phone, string $message, ConversationContext $context): void
+    {
+        $normalized = strtolower(trim($message));
+
+        if (in_array($normalized, ['no', 'n', 'cancel', 'restart'])) {
+            $context->delete();
+            $this->whatsapp->sendText($phone, "No problem — message me again whenever you're ready to sign up.");
+            return;
+        }
+
+        if (!in_array($normalized, ['yes', 'y', 'confirm', 'yeah', 'yep'])) {
+            $this->whatsapp->sendText($phone, "Reply YES to confirm, or NO to start over.");
+            return;
+        }
+
+        $name = $context->payload['name'] ?? null;
+
+        if (!$name) {
+            $context->delete();
+            $this->startSignup($phone);
+            return;
+        }
+
+        // Guard against a dashboard signup landing on this same number while
+        // the WhatsApp flow was mid-confirmation.
+        if (User::where('phone', $phone)->exists()) {
+            $context->delete();
+            $this->whatsapp->sendText($phone, "Looks like this number's already registered — try logging in on the dashboard.");
+            return;
+        }
+
+        User::create([
+            'name' => $name,
+            'phone' => $phone,
+            'email' => null,
+            'password' => Hash::make(Str::random(40)),
+            'status' => 'pending',
+        ]);
+
+        $context->delete();
+
+        $this->whatsapp->sendText($phone, "You're all set, {$name}! 🎉 Just waiting on approval — I'll message you the moment you're in.");
     }
 }

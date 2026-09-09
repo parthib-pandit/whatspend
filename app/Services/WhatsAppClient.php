@@ -183,4 +183,15 @@ class WhatsAppClient
             return false;
         }
     }
+    /**
+     * Sends a password-reset OTP as a plain text message. Returns whether it
+     * actually succeeded, same contract as sendTextSucceeded().
+     */
+    public function sendOtp(string $toPhone, string $otpCode): bool
+    {
+        return $this->sendTextSucceeded(
+            $toPhone,
+            "Your Whatspend password reset code is: {$otpCode}\n\nThis code expires in 10 minutes. If you didn't request this, you can ignore this message."
+        );
+    }
 }
