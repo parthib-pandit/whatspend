@@ -10,6 +10,7 @@ use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use App\Models\RecurringPayment;
 
 class InboundMessageRouter
 {
@@ -24,6 +25,7 @@ class InboundMessageRouter
         protected StatementRequestParser $statementRequestParser,
         protected StatementGenerator $statementGenerator,
         protected WhatsAppMessageFormatter $formatter,
+        protected RecurringPaymentParser $recurringPaymentParser,
     ) {}
 
         public function route(User $user, string $message): void
@@ -47,6 +49,24 @@ class InboundMessageRouter
             return;
         }
 
+        $pendingRecurring = ConversationContext::activeFor($user->id, 'recurring_add_confirm');
+
+        if ($pendingRecurring) {
+            $this->resolveRecurringAddConfirm($user, $message, $pendingRecurring);
+            return;
+        }
+
+        // Distinct from recurring_add_confirm above: that one confirms
+        // *creating* a recurring rule, this one confirms *logging a
+        // payment* against a rule that already exists (opened by
+        // recurring:remind).
+        $pendingRecurringConfirm = ConversationContext::activeFor($user->id, 'recurring_confirm');
+
+        if ($pendingRecurringConfirm) {
+            $this->resolveRecurringConfirm($user, $message, $pendingRecurringConfirm);
+            return;
+        }
+
         if ($this->handleUndoEdit($user, $message)) {
             return;
         }
@@ -60,6 +80,10 @@ class InboundMessageRouter
         }
 
         if ($this->handleQuery($user, $message)) {
+            return;
+        }
+
+        if ($this->handleRecurringPaymentRequest($user, $message)) {
             return;
         }
 
@@ -814,5 +838,190 @@ class InboundMessageRouter
         $context->delete();
 
         $this->whatsapp->sendText($phone, "You're all set, {$name}! 🎉 Just waiting on approval — I'll message you the moment you're in.");
+    }
+    /**
+     * Catches "remind me to pay rent 15000 every month on the 5th" style
+     * declarations. Checked before handleStatementRequest/handleQuery so a
+     * recurring-payment setup request doesn't get misclassified as a
+     * document request or a spending question. The LLM extracts raw fields
+     * only (name/amount/category/interval/day) — next_due_date is always
+     * computed deterministically by RecurringPayment::calculateInitialDueDate,
+     * never by the LLM, same "LLM extracts, Laravel computes" principle as
+     * the rest of the app.
+     */
+    protected function handleRecurringPaymentRequest(User $user, string $message): bool
+    {
+        try {
+            $intent = $this->recurringPaymentParser->parse($message);
+        } catch (\Throwable $e) {
+            return false;
+        }
+
+        if (!$intent['recognized'] || $intent['confidence'] < 0.7) {
+            return false;
+        }
+
+        if (!$intent['amount'] || !$intent['name']) {
+            $this->whatsapp->sendText(
+                $user->phone,
+                "I caught that you want a recurring reminder, but I'm missing the name or amount. Try something like \"remind me to pay rent 15000 every month on the 5th.\""
+            );
+            return true;
+        }
+
+        $category = TransactionCategory::matchLoose($intent['category'] ?? 'Other')?->value ?? 'Other';
+
+        $nextDueDate = RecurringPayment::calculateInitialDueDate(
+            $intent['interval_unit'],
+            $intent['interval_count'],
+            $intent['day_of_month'],
+            $intent['day_of_week'],
+        );
+
+        ConversationContext::setFor(
+            $user->id,
+            'recurring_add_confirm',
+            [
+                'name' => $intent['name'],
+                'amount' => $intent['amount'],
+                'category' => $category,
+                'interval_unit' => $intent['interval_unit'],
+                'interval_count' => $intent['interval_count'],
+                'day_of_month' => $intent['day_of_month'],
+                'day_of_week' => $intent['day_of_week'],
+                'next_due_date' => $nextDueDate->toDateString(),
+            ],
+            now()->addMinutes(5),
+        );
+
+        $intervalLabel = $intent['interval_count'] > 1
+            ? "every {$intent['interval_count']} {$intent['interval_unit']}s"
+            : "every {$intent['interval_unit']}";
+
+        $this->whatsapp->sendText(
+            $user->phone,
+            "Set up a reminder for {$intent['name']} — " . $this->formatter->money($intent['amount'])
+                . " {$intervalLabel}, category {$category}. First reminder: " . $nextDueDate->format('M j, Y')
+                . ". Reply YES to confirm, or NO to cancel."
+        );
+
+        return true;
+    }
+
+    protected function resolveRecurringAddConfirm(User $user, string $message, ConversationContext $context): void
+    {
+        $normalized = strtolower(trim($message));
+
+        if (in_array($normalized, ['yes', 'y', 'confirm', 'yeah', 'yep'])) {
+            $this->executeRecurringAdd($user, $context);
+            return;
+        }
+
+        if (in_array($normalized, ['no', 'n', 'cancel', 'nah', 'nope'])) {
+            $context->delete();
+            $this->whatsapp->sendText($user->phone, "No problem, I didn't set that up. Send it again whenever you're ready.");
+            return;
+        }
+
+        // Not a clear yes/no — leave the context alive (it'll expire on its
+        // own in 5 minutes) rather than guessing.
+        $this->whatsapp->sendText($user->phone, "Reply YES to confirm the reminder, or NO to cancel.");
+    }
+
+    protected function executeRecurringAdd(User $user, ConversationContext $context): void
+    {
+        $payload = $context->payload;
+        $context->delete();
+
+        $recurring = RecurringPayment::create([
+            'user_id' => $user->id,
+            'name' => $payload['name'],
+            'amount' => $payload['amount'],
+            'category' => $payload['category'],
+            'interval_unit' => $payload['interval_unit'],
+            'interval_count' => $payload['interval_count'],
+            'day_of_month' => $payload['day_of_month'],
+            'day_of_week' => $payload['day_of_week'],
+            'next_due_date' => $payload['next_due_date'],
+        ]);
+
+        $this->whatsapp->sendText(
+        $user->phone,
+        "✅ All set — I'll remind you about {$recurring->name} on " . $recurring->next_due_date->format('M j, Y') . '.'
+    );
+}
+
+    /**
+     * Resolves a `recurring_confirm` context opened by recurring:remind.
+     * YES logs a real Transaction against the recurring payment's amount/
+     * category and advances the cycle; NO just advances the cycle without
+     * logging anything (the user is telling us this occurrence didn't
+     * happen, not that we misread anything — so there's nothing to correct,
+     * only a cycle to move past).
+     */
+    protected function resolveRecurringConfirm(User $user, string $message, ConversationContext $context): void
+    {
+        $normalized = strtolower(trim($message));
+
+        $recurring = RecurringPayment::find($context->payload['recurring_payment_id']);
+
+        if (!$recurring) {
+            // Deleted from the dashboard while a reminder was in flight.
+            $context->delete();
+            return;
+        }
+
+        if (in_array($normalized, ['yes', 'y', 'confirm', 'yeah', 'yep', 'paid'])) {
+            $this->executeRecurringConfirmPaid($user, $recurring, $context);
+            return;
+        }
+
+        if (in_array($normalized, ['no', 'n', 'skip', 'nah', 'nope'])) {
+            $this->executeRecurringConfirmSkip($user, $recurring, $context);
+            return;
+        }
+
+        // Not a clear yes/no — leave the context alive rather than
+        // guessing; recurring:remind will retry tomorrow regardless.
+        $this->whatsapp->sendText($user->phone, "Reply YES if you paid {$recurring->name}, or NO to skip logging it this time.");
+    }
+
+    protected function executeRecurringConfirmPaid(User $user, RecurringPayment $recurring, ConversationContext $context): void
+    {
+        $context->delete();
+
+        $transaction = Transaction::create([
+            'user_id' => $user->id,
+            'type' => 'debit',
+            'amount' => $recurring->amount,
+            'category' => $recurring->category,
+            'note' => "Recurring: {$recurring->name}",
+            'source' => 'whatsapp',
+            'status' => 'confirmed',
+            'transaction_date' => Carbon::today(),
+        ]);
+
+        $recurring->missed_last_reminder = false;
+        $recurring->advanceToNextCycle();
+
+        ConversationContext::setFor($user->id, 'last_transaction', ['transaction_id' => $transaction->id]);
+
+        $this->whatsapp->sendText(
+            $user->phone,
+            '✅ Logged ' . $this->formatter->transaction($transaction) . ". Next {$recurring->name} reminder: " . $recurring->next_due_date->format('M j, Y') . '.'
+        );
+    }
+
+    protected function executeRecurringConfirmSkip(User $user, RecurringPayment $recurring, ConversationContext $context): void
+    {
+        $context->delete();
+
+        $recurring->missed_last_reminder = false;
+        $recurring->advanceToNextCycle();
+
+        $this->whatsapp->sendText(
+            $user->phone,
+            "Okay, skipped. Next {$recurring->name} reminder: " . $recurring->next_due_date->format('M j, Y') . '.'
+        );
     }
 }

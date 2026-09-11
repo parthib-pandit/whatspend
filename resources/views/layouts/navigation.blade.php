@@ -41,6 +41,13 @@
                     >
                         {{ __('Budgets') }}
                     </x-nav-link>
+                    <!-- Recurring -->
+                    <x-nav-link
+                        :href="route('recurring-payments.index')"
+                        :active="request()->routeIs('recurring-payments.index')"
+                    >
+                        {{ __('Recurring') }}
+                    </x-nav-link>
 
                 </div>
 
@@ -190,6 +197,13 @@
             >
                 {{ __('Budgets') }}
             </x-responsive-nav-link>
+            <!-- Recurring -->
+            <x-nav-link
+                :href="route('recurring-payments.index')"
+                :active="request()->routeIs('recurring-payments.index')"
+            >
+                {{ __('Recurring') }}
+            </x-nav-link>
 
         </div>
 

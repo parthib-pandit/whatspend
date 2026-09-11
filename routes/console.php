@@ -11,3 +11,4 @@ Artisan::command('inspire', function () {
 Schedule::command('summary:daily')->dailyAt('21:00')->timezone('Asia/Kolkata');
 Schedule::command('summary:weekly')->weeklyOn(0, '21:30')->timezone('Asia/Kolkata'); // Sunday
 Schedule::command('budgets:check')->dailyAt('20:00')->timezone('Asia/Kolkata');
+Schedule::command('recurring:remind')->dailyAt('09:00')->timezone('Asia/Kolkata');

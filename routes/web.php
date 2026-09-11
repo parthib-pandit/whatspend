@@ -6,6 +6,7 @@ use App\Http\Controllers\Admin\UserApprovalController;
 use App\Http\Controllers\TransactionController;
 use App\Http\Controllers\WhatsAppWebhookController;
 use App\Http\Controllers\BudgetController;
+use App\Http\Controllers\RecurringPaymentController;
 
 Route::get('/', function () {
     return view('welcome');
@@ -26,6 +27,11 @@ Route::middleware(['auth', 'block-demo-writes'])->group(function () {
     Route::post('/budgets', [BudgetController::class, 'store'])->name('budgets.store');
     Route::put('/budgets/{budget}', [BudgetController::class, 'update'])->name('budgets.update');
     Route::delete('/budgets/{budget}', [BudgetController::class, 'destroy'])->name('budgets.destroy');
+    Route::get('/recurring-payments', [RecurringPaymentController::class, 'index'])->name('recurring-payments.index');
+    Route::post('/recurring-payments', [RecurringPaymentController::class, 'store'])->name('recurring-payments.store');
+    Route::put('/recurring-payments/{recurringPayment}', [RecurringPaymentController::class, 'update'])->name('recurring-payments.update');
+    Route::delete('/recurring-payments/{recurringPayment}', [RecurringPaymentController::class, 'destroy'])->name('recurring-payments.destroy');
+    Route::post('/recurring-payments/{recurringPayment}/toggle', [RecurringPaymentController::class, 'toggle'])->name('recurring-payments.toggle');
 });
 
 Route::middleware(['auth', 'admin'])->prefix('admin')->name('admin.')->group(function () {
